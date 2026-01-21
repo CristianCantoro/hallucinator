@@ -67,12 +67,11 @@ def print_hallucinated_reference(title, error_type, source=None, ref_authors=Non
     print()
 
 def normalize_title(title):
+    """Normalize title for comparison - keep only alphanumeric and spaces."""
     title = unicodedata.normalize("NFKD", str(title))
     title = title.encode("ascii", "ignore").decode("ascii")
-    title = title.replace("\u2019", "'").replace("\u2013", "-").replace("\u2014", "-")
-    title = re.sub(r'[\u00A0\s]+', ' ', title)
-    title = re.sub(r'[^\w\s-]', '', title)
-    title = re.sub(r'[\s-]+', ' ', title)
+    title = re.sub(r'[^a-zA-Z0-9\s]', '', title)
+    title = re.sub(r'\s+', ' ', title)
     return title.strip().lower()
 
 def extract_text_from_pdf(pdf_path):
@@ -250,20 +249,20 @@ def clean_title(title):
     if not title:
         return ""
 
-    # Fix remaining hyphenation issues
+    # Fix hyphenation from PDF line breaks
     title = re.sub(r'(\w)- (\w)', r'\1\2', title)
     title = re.sub(r'(\w)-\s+(\w)', r'\1\2', title)
 
-    # Key insight: ". In", ", In", or "? In" usually marks where title ends and venue begins
-    # Also catches ". In 2003" (year after In)
-    # Cut off at these patterns (include ? for question titles)
-    in_venue_match = re.search(r'[.,?]\s*[Ii]n\s+(?:[A-Z]|[12]\d{3}\s)', title)
+    # Truncate at first period (titles don't contain periods, venues/journals do)
+    # But keep question marks as they can end titles
+    period_pos = title.find('.')
+    if period_pos > 0:
+        title = title[:period_pos]
+
+    # Also handle "? In" pattern for question-ending titles
+    in_venue_match = re.search(r'\?\s*[Ii]n\s+(?:[A-Z]|[12]\d{3}\s)', title)
     if in_venue_match:
-        # Keep the question mark if present, remove period/comma
-        end_pos = in_venue_match.start()
-        if title[end_pos] == '?':
-            end_pos += 1  # Keep the question mark
-        title = title[:end_pos]
+        title = title[:in_venue_match.start() + 1]  # Keep the question mark
 
     # Remove trailing journal/venue info that might have been included
     cutoff_patterns = [
