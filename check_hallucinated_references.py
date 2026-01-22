@@ -79,12 +79,30 @@ def normalize_title(title):
     title = re.sub(r'[^a-zA-Z0-9]', '', title)
     return title.lower()
 
+def expand_ligatures(text):
+    """Expand common typographic ligatures found in PDFs."""
+    ligatures = {
+        '\ufb00': 'ff',   # ﬀ
+        '\ufb01': 'fi',   # ﬁ
+        '\ufb02': 'fl',   # ﬂ
+        '\ufb03': 'ffi',  # ﬃ
+        '\ufb04': 'ffl',  # ﬄ
+        '\ufb05': 'st',   # ﬅ (long s + t)
+        '\ufb06': 'st',   # ﬆ
+    }
+    for lig, expanded in ligatures.items():
+        text = text.replace(lig, expanded)
+    return text
+
+
 def extract_text_from_pdf(pdf_path):
     """Extract text from PDF using PyMuPDF."""
     import fitz
     doc = fitz.open(pdf_path)
     text = "\n".join(page.get_text() for page in doc)
     doc.close()
+    # Expand typographic ligatures (ﬁ → fi, ﬂ → fl, etc.)
+    text = expand_ligatures(text)
     return text
 
 
@@ -189,8 +207,20 @@ def extract_authors_from_reference(ref_text):
     # ACM format: authors end before ". Year." pattern
     acm_year_match = re.search(r'\.\s*((?:19|20)\d{2})\.\s*', ref_text)
 
-    # USENIX/default: authors end at first period
-    first_period = ref_text.find('. ')
+    # USENIX/default: authors end at first "real" period (not after initials like "M." or "J.")
+    # Find period followed by space and a word that's not a single capital (another initial)
+    first_period = -1
+    for match in re.finditer(r'\. ', ref_text):
+        pos = match.start()
+        # Check what comes before the period - if it's a single capital letter, it's an initial
+        if pos > 0:
+            char_before = ref_text[pos-1]
+            # Check if char before is a single capital (and the char before that is space or start)
+            if char_before.isupper() and (pos == 1 or not ref_text[pos-2].isalpha()):
+                # This is likely an initial like "M." or "J." - skip it
+                continue
+        first_period = pos
+        break
 
     # Determine author section based on format detection
     author_end = len(ref_text)
@@ -308,6 +338,31 @@ def clean_title(title, from_quotes=False):
     return title.strip()
 
 
+def split_sentences_skip_initials(text):
+    """Split text into sentences, but skip periods that are author initials (e.g., 'M.' 'J.')."""
+    sentences = []
+    current_start = 0
+
+    for match in re.finditer(r'\.\s+', text):
+        pos = match.start()
+        # Check if this period follows a single capital letter (author initial)
+        if pos > 0:
+            char_before = text[pos-1]
+            # If char before is a single capital (and char before that is space/start), it's an initial
+            if char_before.isupper() and (pos == 1 or not text[pos-2].isalpha()):
+                continue  # Skip this period - it's an initial
+
+        # This is a real sentence boundary
+        sentences.append(text[current_start:pos].strip())
+        current_start = match.end()
+
+    # Add the remaining text as the last sentence
+    if current_start < len(text):
+        sentences.append(text[current_start:].strip())
+
+    return sentences
+
+
 def extract_title_from_reference(ref_text):
     """Extract title from a reference string.
 
@@ -398,9 +453,9 @@ def extract_title_from_reference(ref_text):
         if venue_match:
             before_venue = ref_text[:venue_match.start()].strip()
 
-            # Split into sentences
+            # Split into sentences, skipping author initials like "M." "J."
             # For USENIX: "Authors. Title" - title is after first period
-            parts = re.split(r'\.\s+', before_venue, maxsplit=1)
+            parts = split_sentences_skip_initials(before_venue)
             if len(parts) >= 2:
                 title = parts[1].strip()
                 title = re.sub(r'\.\s*$', '', title)
@@ -416,14 +471,15 @@ def extract_title_from_reference(ref_text):
     journal_match = re.search(r'\.\s*([A-Z][^.]+(?:Journal|Review|Transactions|Letters|Magazine|Science|Nature|Processing|Advances)[^.]*),\s*(?:vol\.|Volume|\d+\(|\d+,)', ref_text, re.IGNORECASE)
     if journal_match:
         before_journal = ref_text[:journal_match.start()].strip()
-        parts = re.split(r'\.\s+', before_journal, maxsplit=1)
+        parts = split_sentences_skip_initials(before_journal)
         if len(parts) >= 2:
             title = parts[1].strip()
             if len(title.split()) >= 3:
                 return title, False  # from_quotes=False
 
     # === Fallback: second sentence if it looks like a title ===
-    sentences = re.split(r'\.\s+', ref_text)
+    # Use smart splitting that skips author initials like "M." "J."
+    sentences = split_sentences_skip_initials(ref_text)
     if len(sentences) >= 2:
         # First sentence is likely authors, second might be title
         potential_title = sentences[1].strip()
@@ -669,7 +725,7 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None):
         # 1. OpenAlex (if API key provided)
         if openalex_key:
             found_title, found_authors = query_openalex(title, openalex_key)
-            if found_title:
+            if found_title and found_authors:  # Skip to next source if authors empty
                 if validate_authors(ref_authors, found_authors):
                     found += 1
                 else:
