@@ -67,12 +67,14 @@ def print_hallucinated_reference(title, error_type, source=None, ref_authors=Non
     print()
 
 def normalize_title(title):
-    """Normalize title for comparison - keep only alphanumeric and spaces."""
-    title = unicodedata.normalize("NFKD", str(title))
+    """Normalize title for comparison - keep only alphanumeric characters."""
+    import html
+    title = html.unescape(str(title))  # Decode HTML entities like &quot;
+    title = unicodedata.normalize("NFKD", title)
     title = title.encode("ascii", "ignore").decode("ascii")
-    title = re.sub(r'[^a-zA-Z0-9\s]', '', title)
-    title = re.sub(r'\s+', ' ', title)
-    return title.strip().lower()
+    # Keep only letters and numbers, remove everything else including spaces
+    title = re.sub(r'[^a-zA-Z0-9]', '', title)
+    return title.lower()
 
 def extract_text_from_pdf(pdf_path):
     """Extract text from PDF using PyMuPDF."""
@@ -244,7 +246,7 @@ def extract_authors_from_reference(ref_text):
     return authors[:15]
 
 
-def clean_title(title):
+def clean_title(title, from_quotes=False):
     """Clean extracted title by removing trailing venue/metadata."""
     if not title:
         return ""
@@ -253,8 +255,11 @@ def clean_title(title):
     title = re.sub(r'(\w)- (\w)', r'\1\2', title)
     title = re.sub(r'(\w)-\s+(\w)', r'\1\2', title)
 
-    # Truncate at first period (titles don't contain periods, venues/journals do)
-    # But keep question marks as they can end titles
+    # If title came from quotes, return it as-is (quotes already delimit the title)
+    if from_quotes:
+        return title.strip()
+
+    # For non-quoted titles, truncate at first period
     period_pos = title.find('.')
     if period_pos > 0:
         title = title[:period_pos]
@@ -298,6 +303,8 @@ def extract_title_from_reference(ref_text):
     - IEEE: Authors, "Title," in Venue, Year.
     - ACM: Authors. Year. Title. In Venue.
     - USENIX: Authors. Title. In/Journal Venue, Year.
+
+    Returns: (title, from_quotes) tuple where from_quotes indicates if title was in quotes.
     """
     # Fix hyphenation from PDF line breaks (e.g., "detec- tion" -> "detection")
     ref_text = re.sub(r'(\w)- (\w)', r'\1\2', ref_text)
@@ -315,7 +322,7 @@ def extract_title_from_reference(ref_text):
             title = match.group(1).strip()
             title = re.sub(r',\s*$', '', title)
             if len(title.split()) >= 3:
-                return title
+                return title, True  # from_quotes=True
 
     # === Format 2: ACM - "Authors. Year. Title. In Venue" ===
     # Pattern: ". YYYY. Title-text. In "
@@ -337,7 +344,7 @@ def extract_title_from_reference(ref_text):
         title = after_year[:title_end].strip()
         title = re.sub(r'\.\s*$', '', title)
         if len(title.split()) >= 3:
-            return title
+            return title, False  # from_quotes=False
 
     # === Format 3: USENIX - "Authors. Title. In/Journal Venue, Year" ===
     # Find venue markers and extract title before them
@@ -361,7 +368,7 @@ def extract_title_from_reference(ref_text):
                 if len(title.split()) >= 3:
                     # Verify it doesn't look like authors
                     if not re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+,', title):
-                        return title
+                        return title, False  # from_quotes=False
 
             break
 
@@ -374,7 +381,7 @@ def extract_title_from_reference(ref_text):
         if len(parts) >= 2:
             title = parts[1].strip()
             if len(title.split()) >= 3:
-                return title
+                return title, False  # from_quotes=False
 
     # === Fallback: second sentence if it looks like a title ===
     sentences = re.split(r'\.\s+', ref_text)
@@ -399,9 +406,9 @@ def extract_title_from_reference(ref_text):
         # Skip if starts with "In " (venue)
         if not re.match(r'^[Ii]n\s+', potential_title):
             if len(potential_title.split()) >= 3:
-                return potential_title
+                return potential_title, False  # from_quotes=False
 
-    return ""
+    return "", False
 
 
 def extract_references_with_titles_and_authors(pdf_path):
@@ -432,8 +439,8 @@ def extract_references_with_titles_and_authors(pdf_path):
             if not re.search(r'(acm\.org|ieee\.org|usenix\.org|arxiv\.org|doi\.org)', ref_text, re.IGNORECASE):
                 continue
 
-        title = extract_title_from_reference(ref_text)
-        title = clean_title(title)
+        title, from_quotes = extract_title_from_reference(ref_text)
+        title = clean_title(title, from_quotes=from_quotes)
         if not title or len(title.split()) < 5:
             continue
 
@@ -456,8 +463,20 @@ def extract_references_with_titles_and_authors(pdf_path):
 
     return references
 
+# Common words to skip when building search queries
+STOP_WORDS = {'a', 'an', 'the', 'of', 'and', 'or', 'for', 'to', 'in', 'on', 'with', 'by'}
+
+def get_query_words(title, n=6):
+    """Extract n significant words from title for query, skipping stop words."""
+    all_words = re.findall(r'[a-zA-Z0-9]+', title)
+    significant = [w for w in all_words if w.lower() not in STOP_WORDS]
+    return significant[:n] if len(significant) >= 3 else all_words[:n]
+
 def query_dblp(title):
-    url = f"https://dblp.org/search/publ/api?q={urllib.parse.quote(title)}&format=json"
+    # Use first 6 significant words for query (skip stop words, special chars fail)
+    words = get_query_words(title, 6)
+    query = ' '.join(words)
+    url = f"https://dblp.org/search/publ/api?q={urllib.parse.quote(query)}&format=json"
     try:
         response = requests.get(url)
         if response.status_code != 200:
@@ -479,7 +498,10 @@ def query_dblp(title):
     return None, []
 
 def query_arxiv(title):
-    url = f"http://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(title)}&start=0&max_results=5"
+    # Use first 6 significant words for query (skip stop words)
+    words = get_query_words(title, 6)
+    query = ' '.join(words)
+    url = f"http://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(query)}&start=0&max_results=5"
     try:
         feed = feedparser.parse(url)
         for entry in feed.entries:
@@ -492,7 +514,10 @@ def query_arxiv(title):
     return None, []
 
 def query_crossref(title):
-    url = f"https://api.crossref.org/works?query.title={urllib.parse.quote(title)}&rows=5"
+    # Use first 6 significant words for query (skip stop words)
+    words = get_query_words(title, 6)
+    query = ' '.join(words)
+    url = f"https://api.crossref.org/works?query.title={urllib.parse.quote(query)}&rows=5"
     try:
         response = requests.get(url, headers={"User-Agent": "Academic Reference Parser"})
         if response.status_code != 200:
