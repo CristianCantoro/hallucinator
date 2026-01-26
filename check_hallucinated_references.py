@@ -745,8 +745,22 @@ def validate_authors(ref_authors, found_authors):
             return ""
         return f"{parts[0][0]} {parts[-1].lower()}"
 
-    ref_set = set(normalize_author(a) for a in ref_authors)
-    found_set = set(normalize_author(a) for a in found_authors)
+    def get_last_name(name):
+        parts = name.split()
+        if not parts:
+            return ""
+        return parts[-1].lower()
+
+    # Check if PDF-extracted authors are last-name-only (single words)
+    ref_authors_are_last_name_only = all(len(a.split()) == 1 for a in ref_authors if a.strip())
+
+    if ref_authors_are_last_name_only:
+        # Only compare last names
+        ref_set = set(get_last_name(a) for a in ref_authors)
+        found_set = set(get_last_name(a) for a in found_authors)
+    else:
+        ref_set = set(normalize_author(a) for a in ref_authors)
+        found_set = set(normalize_author(a) for a in found_authors)
     return bool(ref_set & found_set)
 
 def main(pdf_path, sleep_time=1.0, openalex_key=None):
