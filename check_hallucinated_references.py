@@ -87,7 +87,7 @@ COMPOUND_SUFFIXES = {
     'scale', 'level', 'order', 'class', 'type', 'style', 'wise', 'fold',
     'shot', 'step', 'time', 'world', 'source', 'domain', 'task', 'modal',
     'intensive', 'efficient', 'agnostic', 'invariant', 'sensitive', 'grained',
-    'agent',
+    'agent', 'site',
 }
 
 
@@ -356,7 +356,7 @@ def clean_title(title, from_quotes=False):
 
     # Remove trailing journal/venue info that might have been included
     cutoff_patterns = [
-        r'\.\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available).*$',
+        r'\.\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR).*$',
         r'\.\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$',
         r'\.\s*[A-Z][a-z]+\s+(?:Journal|Review|Transactions|Letters|advances|Processing|medica|Intelligenz)\b.*$',
         r'\.\s*(?:Patterns|Data\s+&\s+Knowledge).*$',
@@ -372,6 +372,7 @@ def clean_title(title, from_quotes=False):
         r'\.\s*KI-Künstliche.*$',
         r'\s+arXiv\s+preprint.*$',  # "arXiv preprint arXiv:..."
         r'\s+arXiv:\d+.*$',  # "arXiv:2503..."
+        r'\s+CoRR\s+abs/.*$',  # "CoRR abs/1234.5678"
     ]
 
     for pattern in cutoff_patterns:
