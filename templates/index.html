@@ -321,6 +321,10 @@
             color: #16a34a;
             font-size: 0.85rem;
             white-space: nowrap;
+            text-decoration: none;
+        }
+        a.verified-source:hover {
+            text-decoration: underline;
         }
         /* Multi-file archive styles */
         .file-section {
@@ -530,6 +534,10 @@
         // Track live results during streaming
         let liveResults = [];
         let totalRefs = 0;
+        let isArchive = false;
+        let archiveFileCount = 0;
+        let currentFileIndex = 0;
+        let currentFilename = '';
 
         function createScholarLink(title) {
             const encoded = encodeURIComponent(title);
@@ -638,9 +646,12 @@
                 verified.forEach(ref => {
                     const item = document.createElement('div');
                     item.className = 'verified-item';
+                    const sourceLink = ref.paper_url
+                        ? `<a href="${escapeHtml(ref.paper_url)}" target="_blank" class="verified-source">${escapeHtml(ref.source || 'Unknown')} ↗</a>`
+                        : `<span class="verified-source">${escapeHtml(ref.source || 'Unknown')}</span>`;
                     item.innerHTML = `
                         <span class="verified-title">${escapeHtml(ref.title)}</span>
-                        <span class="verified-source">${escapeHtml(ref.source || 'Unknown')}</span>
+                        ${sourceLink}
                     `;
                     verifiedList.appendChild(item);
                 });
@@ -773,12 +784,40 @@
                 });
             }
 
+            // Add verified references section
+            const verified = file.results.filter(r => r.status === 'verified');
+            if (verified.length > 0) {
+                html += `
+                    <div class="verified-section">
+                        <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
+                            <span>Verified References (${verified.length})</span>
+                            <span class="verified-toggle">▼</span>
+                        </div>
+                        <div class="verified-list">
+                            ${verified.map(ref => `
+                                <div class="verified-item">
+                                    <span class="verified-title">${escapeHtml(ref.title)}</span>
+                                    ${ref.paper_url
+                                        ? `<a href="${escapeHtml(ref.paper_url)}" target="_blank" class="verified-source">${escapeHtml(ref.source || 'Unknown')} ↗</a>`
+                                        : `<span class="verified-source">${escapeHtml(ref.source || 'Unknown')}</span>`
+                                    }
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
             return html;
         }
 
         function resetProgressUI() {
             liveResults = [];
             totalRefs = 0;
+            isArchive = false;
+            archiveFileCount = 0;
+            currentFileIndex = 0;
+            currentFilename = '';
             progressBar.style.width = '0%';
             progressStatus.textContent = 'Extracting references...';
             progressCurrent.textContent = '';
@@ -838,50 +877,7 @@
             errorMessage.classList.remove('visible');
             results.classList.remove('visible');
 
-            // Check if file is an archive (use regular fetch for archives)
-            const isArchive = file.name.toLowerCase().endsWith('.zip') ||
-                              file.name.toLowerCase().endsWith('.tar.gz') ||
-                              file.name.toLowerCase().endsWith('.tgz');
-
-            if (isArchive) {
-                // Use regular fetch for archives (SSE only supports single PDF currently)
-                progressStatus.textContent = 'Processing archive...';
-                try {
-                    const response = await fetch('/analyze', {
-                        method: 'POST',
-                        body: formData,
-                    });
-
-                    const data = await response.json();
-
-                    if (!response.ok || data.error) {
-                        throw new Error(data.error || 'Analysis failed');
-                    }
-
-                    progressSection.classList.remove('visible');
-
-                    // Reset the hallucinations header visibility
-                    document.getElementById('hallucinations').querySelector('h2').style.display = 'block';
-
-                    if (data.files && data.file_count > 0) {
-                        renderMultiFileResults(data);
-                    } else {
-                        renderSingleFileResults(data);
-                    }
-
-                    results.classList.add('visible');
-
-                } catch (err) {
-                    progressSection.classList.remove('visible');
-                    errorMessage.textContent = err.message;
-                    errorMessage.classList.add('visible');
-                } finally {
-                    submitBtn.disabled = false;
-                }
-                return;
-            }
-
-            // Use SSE for single PDF
+            // Use SSE for all uploads (PDFs and archives)
             try {
                 const response = await fetch('/analyze/stream', {
                     method: 'POST',
@@ -919,10 +915,45 @@
 
                     console.log('SSE event:', eventType, eventData);
 
-                    if (eventType === 'extraction_complete') {
+                    if (eventType === 'archive_start') {
+                        isArchive = true;
+                        archiveFileCount = eventData.file_count;
+                        progressHeaderText.textContent = `Processing ${archiveFileCount} files...`;
+                        progressStatus.textContent = `Archive with ${archiveFileCount} PDFs`;
+                    } else if (eventType === 'file_start') {
+                        currentFileIndex = eventData.file_index;
+                        currentFilename = eventData.filename;
+                        liveResults = []; // Reset for new file
+                        totalRefs = 0;
+                        if (isArchive) {
+                            progressHeaderText.textContent = `File ${currentFileIndex + 1}/${archiveFileCount}: ${currentFilename}`;
+                            // Add file separator in results
+                            const separator = document.createElement('div');
+                            separator.className = 'progress-result-item';
+                            separator.innerHTML = `<strong style="color: #2563eb;">--- ${escapeHtml(currentFilename)} ---</strong>`;
+                            progressResults.appendChild(separator);
+                            progressResults.scrollTop = progressResults.scrollHeight;
+                        }
+                        progressStatus.textContent = 'Extracting references...';
+                    } else if (eventType === 'file_complete') {
+                        if (isArchive) {
+                            const fc = eventData;
+                            if (fc.success) {
+                                progressStatus.textContent = `File ${currentFileIndex + 1}/${archiveFileCount} complete: ${fc.summary.verified} verified, ${fc.summary.not_found} not found`;
+                            } else {
+                                progressStatus.textContent = `File ${currentFileIndex + 1}/${archiveFileCount} failed: ${fc.error}`;
+                            }
+                            // Update overall progress bar based on files completed
+                            const filePct = ((currentFileIndex + 1) / archiveFileCount) * 100;
+                            progressBar.style.width = filePct + '%';
+                        }
+                    } else if (eventType === 'extraction_complete') {
                         totalRefs = eventData.total_refs;
-                        progressStatus.textContent = `Found ${totalRefs} references to check`;
-                        progressHeaderText.textContent = `Checking ${totalRefs} references...`;
+                        const prefix = isArchive ? `[${currentFilename}] ` : '';
+                        progressStatus.textContent = `${prefix}Found ${totalRefs} references to check`;
+                        if (!isArchive) {
+                            progressHeaderText.textContent = `Checking ${totalRefs} references...`;
+                        }
                     } else if (eventType === 'retry_pass') {
                         progressStatus.textContent = `Retrying ${eventData.count} references that had timeouts...`;
                         progressHeaderText.textContent = `Retry pass...`;
@@ -931,19 +962,27 @@
                             ? eventData.title.substring(0, 60) + '...'
                             : eventData.title;
                         progressCurrent.textContent = `[${eventData.index + 1}/${eventData.total}] Checking: "${shortTitle}"`;
-                        const pct = ((eventData.index) / eventData.total) * 100;
-                        progressBar.style.width = pct + '%';
+                        // For single PDF, update progress bar based on refs; for archive, keep file-based progress
+                        if (!isArchive) {
+                            const pct = ((eventData.index) / eventData.total) * 100;
+                            progressBar.style.width = pct + '%';
+                        }
                     } else if (eventType === 'result') {
                         liveResults.push(eventData);
                         addProgressResult(eventData);
-                        const pct = ((eventData.index + 1) / eventData.total) * 100;
-                        progressBar.style.width = pct + '%';
 
                         // Update status with running totals
                         const verified = liveResults.filter(r => r.status === 'verified').length;
                         const notFound = liveResults.filter(r => r.status === 'not_found').length;
                         const mismatch = liveResults.filter(r => r.status === 'author_mismatch').length;
-                        progressStatus.textContent = `Checked ${eventData.index + 1}/${eventData.total}: ${verified} verified, ${notFound} not found, ${mismatch} mismatched`;
+
+                        if (!isArchive) {
+                            const pct = ((eventData.index + 1) / eventData.total) * 100;
+                            progressBar.style.width = pct + '%';
+                            progressStatus.textContent = `Checked ${eventData.index + 1}/${eventData.total}: ${verified} verified, ${notFound} not found, ${mismatch} mismatched`;
+                        } else {
+                            progressStatus.textContent = `[${currentFilename}] ${eventData.index + 1}/${eventData.total}: ${verified} verified, ${notFound} not found, ${mismatch} mismatched`;
+                        }
                     } else if (eventType === 'complete') {
                         // Analysis complete - render full results
                         progressSection.classList.remove('visible');
@@ -951,10 +990,15 @@
                         // Reset the hallucinations header visibility
                         document.getElementById('hallucinations').querySelector('h2').style.display = 'block';
 
-                        renderSingleFileResults({
-                            summary: eventData.summary,
-                            results: eventData.results,
-                        });
+                        // Check if this is a multi-file result
+                        if (eventData.files && eventData.file_count > 1) {
+                            renderMultiFileResults(eventData);
+                        } else {
+                            renderSingleFileResults({
+                                summary: eventData.summary,
+                                results: eventData.results,
+                            });
+                        }
 
                         results.classList.add('visible');
                     } else if (eventType === 'error') {

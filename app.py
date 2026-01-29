@@ -412,7 +412,7 @@ def analyze():
 
 @app.route('/analyze/stream', methods=['POST'])
 def analyze_stream():
-    """SSE endpoint for streaming analysis progress."""
+    """SSE endpoint for streaming analysis progress (supports single PDFs and archives)."""
     if 'pdf' not in request.files:
         logger.warning("Request received with no file")
         return jsonify({'error': 'No file provided'}), 400
@@ -433,10 +433,13 @@ def analyze_stream():
 
     # Create temp directory and save file
     temp_dir = tempfile.mkdtemp()
+    pdf_files = []  # List of (filename, path) tuples
+
     try:
         if file_type == 'pdf':
             temp_path = os.path.join(temp_dir, 'upload.pdf')
             uploaded_file.save(temp_path)
+            pdf_files = [(uploaded_file.filename, temp_path)]
         else:
             # Archive handling
             suffix = '.zip' if file_type == 'zip' else '.tar.gz'
@@ -455,29 +458,91 @@ def analyze_stream():
             if not pdf_files:
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 return jsonify({'error': 'No PDF files found in archive'}), 400
-
-            # For now, only stream first PDF (archives are complex)
-            # Full archive support could be added later
-            temp_path = pdf_files[0][1]
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
         return jsonify({'error': str(e)}), 500
 
+    is_archive = len(pdf_files) > 1
+
     def generate():
         """Generator for SSE events."""
         event_queue = queue.Queue()
-        all_results = []
-        skip_stats_holder = [None]
+        all_file_results = []  # List of per-file result dicts
+        current_file_results = []
+        current_skip_stats = [None]
+        current_filename = [None]
 
         def on_progress(event_type, data):
             logger.debug(f"SSE: Queueing event {event_type}")
+            # Add current filename context for archive mode
+            if is_archive and current_filename[0]:
+                data = dict(data) if data else {}
+                data['filename'] = current_filename[0]
             event_queue.put((event_type, data))
 
         def run_analysis():
             try:
-                results, skip_stats = analyze_pdf(temp_path, openalex_key=openalex_key, on_progress=on_progress)
-                skip_stats_holder[0] = skip_stats
-                all_results.extend(results)
+                # Send archive_start event if processing multiple files
+                if is_archive:
+                    event_queue.put(('archive_start', {'file_count': len(pdf_files)}))
+
+                for file_idx, (filename, pdf_path) in enumerate(pdf_files):
+                    current_filename[0] = filename
+                    current_file_results.clear()
+
+                    # Send file_start event
+                    event_queue.put(('file_start', {
+                        'file_index': file_idx,
+                        'file_count': len(pdf_files),
+                        'filename': filename,
+                    }))
+
+                    try:
+                        results, skip_stats = analyze_pdf(pdf_path, openalex_key=openalex_key, on_progress=on_progress)
+                        current_skip_stats[0] = skip_stats
+                        current_file_results.extend(results)
+
+                        # Calculate file summary
+                        verified = sum(1 for r in results if r['status'] == 'verified')
+                        not_found = sum(1 for r in results if r['status'] == 'not_found')
+                        mismatched = sum(1 for r in results if r['status'] == 'author_mismatch')
+                        total_skipped = skip_stats.get('skipped_url', 0) + skip_stats.get('skipped_short_title', 0)
+
+                        file_result = {
+                            'filename': filename,
+                            'success': True,
+                            'summary': {
+                                'total_raw': skip_stats.get('total_raw', 0),
+                                'total': len(results),
+                                'verified': verified,
+                                'not_found': not_found,
+                                'mismatched': mismatched,
+                                'skipped': total_skipped,
+                                'skipped_url': skip_stats.get('skipped_url', 0),
+                                'skipped_short_title': skip_stats.get('skipped_short_title', 0),
+                                'title_only': skip_stats.get('skipped_no_authors', 0),
+                                'total_timeouts': skip_stats.get('total_timeouts', 0),
+                                'retried_count': skip_stats.get('retried_count', 0),
+                                'retry_successes': skip_stats.get('retry_successes', 0),
+                            },
+                            'results': results,
+                        }
+                        all_file_results.append(file_result)
+
+                        # Send file_complete event
+                        event_queue.put(('file_complete', file_result))
+
+                    except Exception as e:
+                        logger.error(f"Error processing {filename}: {e}")
+                        file_result = {
+                            'filename': filename,
+                            'success': False,
+                            'error': str(e),
+                            'results': [],
+                        }
+                        all_file_results.append(file_result)
+                        event_queue.put(('file_complete', file_result))
+
                 event_queue.put(('analysis_done', None))
             except Exception as e:
                 event_queue.put(('error', {'message': str(e)}))
@@ -504,6 +569,15 @@ def analyze_stream():
                     logger.debug(f"SSE: Sending error event")
                     yield f"event: error\ndata: {json.dumps(data)}\n\n".encode('utf-8')
                     break
+                elif event_type == 'archive_start':
+                    logger.debug(f"SSE: Sending archive_start event")
+                    yield f"event: archive_start\ndata: {json.dumps(data)}\n\n".encode('utf-8')
+                elif event_type == 'file_start':
+                    logger.debug(f"SSE: Sending file_start event for {data.get('filename')}")
+                    yield f"event: file_start\ndata: {json.dumps(data)}\n\n".encode('utf-8')
+                elif event_type == 'file_complete':
+                    logger.debug(f"SSE: Sending file_complete event for {data.get('filename')}")
+                    yield f"event: file_complete\ndata: {json.dumps(data)}\n\n".encode('utf-8')
                 elif event_type == 'extraction_complete':
                     logger.debug(f"SSE: Sending extraction_complete event")
                     yield f"event: extraction_complete\ndata: {json.dumps(data)}\n\n".encode('utf-8')
@@ -522,34 +596,36 @@ def analyze_stream():
                         'status': data['status'],
                         'source': data['source'],
                     }
+                    if 'filename' in data:
+                        result_data['filename'] = data['filename']
                     logger.debug(f"SSE: Sending result event for index {data.get('index')}")
                     yield f"event: result\ndata: {json.dumps(result_data)}\n\n".encode('utf-8')
                 elif event_type == 'analysis_done':
-                    # Send complete event with summary
+                    # Send complete event with aggregated summary
                     logger.debug("SSE: Sending complete event")
-                    skip_stats = skip_stats_holder[0] or {}
-                    verified = sum(1 for r in all_results if r['status'] == 'verified')
-                    not_found = sum(1 for r in all_results if r['status'] == 'not_found')
-                    mismatched = sum(1 for r in all_results if r['status'] == 'author_mismatch')
-                    total_skipped = skip_stats.get('skipped_url', 0) + skip_stats.get('skipped_short_title', 0)
+
+                    # Aggregate stats across all files
+                    agg_summary = {
+                        'total_raw': 0, 'total': 0, 'verified': 0, 'not_found': 0,
+                        'mismatched': 0, 'skipped': 0, 'skipped_url': 0,
+                        'skipped_short_title': 0, 'title_only': 0,
+                        'total_timeouts': 0, 'retried_count': 0, 'retry_successes': 0,
+                    }
+                    all_results = []
+                    for fr in all_file_results:
+                        if fr.get('success'):
+                            for key in agg_summary:
+                                agg_summary[key] += fr['summary'].get(key, 0)
+                            all_results.extend(fr['results'])
 
                     complete_data = {
-                        'summary': {
-                            'total_raw': skip_stats.get('total_raw', 0),
-                            'total': len(all_results),
-                            'verified': verified,
-                            'not_found': not_found,
-                            'mismatched': mismatched,
-                            'skipped': total_skipped,
-                            'skipped_url': skip_stats.get('skipped_url', 0),
-                            'skipped_short_title': skip_stats.get('skipped_short_title', 0),
-                            'title_only': skip_stats.get('skipped_no_authors', 0),
-                            'total_timeouts': skip_stats.get('total_timeouts', 0),
-                            'retried_count': skip_stats.get('retried_count', 0),
-                            'retry_successes': skip_stats.get('retry_successes', 0),
-                        },
+                        'summary': agg_summary,
                         'results': all_results,
                     }
+                    if is_archive:
+                        complete_data['file_count'] = len(pdf_files)
+                        complete_data['files'] = all_file_results
+
                     yield f"event: complete\ndata: {json.dumps(complete_data)}\n\n".encode('utf-8')
 
         finally:
