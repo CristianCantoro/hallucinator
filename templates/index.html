@@ -72,15 +72,19 @@
             background: #9ca3af;
             cursor: not-allowed;
         }
-        .spinner {
+        .progress-section {
             display: none;
+            margin-top: 1rem;
+        }
+        .progress-section.visible {
+            display: block;
+        }
+        .progress-header {
+            display: flex;
             align-items: center;
             gap: 0.5rem;
-            margin-top: 1rem;
-            color: #666;
-        }
-        .spinner.visible {
-            display: flex;
+            margin-bottom: 0.75rem;
+            color: #333;
         }
         .spinner-icon {
             width: 20px;
@@ -92,6 +96,58 @@
         }
         @keyframes spin {
             to { transform: rotate(360deg); }
+        }
+        .progress-bar-container {
+            background: #e5e7eb;
+            border-radius: 4px;
+            height: 8px;
+            margin-bottom: 0.75rem;
+            overflow: hidden;
+        }
+        .progress-bar {
+            background: #2563eb;
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        .progress-status {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 0.5rem;
+        }
+        .progress-current {
+            font-size: 0.85rem;
+            color: #888;
+            font-style: italic;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .progress-results {
+            margin-top: 1rem;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 4px;
+            padding: 0.5rem;
+            background: #fafafa;
+        }
+        .progress-result-item {
+            padding: 0.25rem 0;
+            border-bottom: 1px solid #eee;
+        }
+        .progress-result-item:last-child {
+            border-bottom: none;
+        }
+        .progress-result-verified {
+            color: #16a34a;
+        }
+        .progress-result-mismatch {
+            color: #ca8a04;
+        }
+        .progress-result-notfound {
+            color: #dc2626;
         }
         .results {
             display: none;
@@ -213,6 +269,58 @@
             padding: 2rem;
             text-align: center;
             color: #16a34a;
+        }
+        .verified-section {
+            border-top: 1px solid #eee;
+            margin-top: 1rem;
+        }
+        .verified-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            background: #f0fdf4;
+            cursor: pointer;
+            user-select: none;
+            color: #16a34a;
+            font-weight: 500;
+        }
+        .verified-header:hover {
+            background: #dcfce7;
+        }
+        .verified-toggle {
+            transition: transform 0.2s;
+        }
+        .verified-section.expanded .verified-toggle {
+            transform: rotate(180deg);
+        }
+        .verified-list {
+            display: none;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .verified-section.expanded .verified-list {
+            display: block;
+        }
+        .verified-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1.5rem;
+            border-bottom: 1px solid #eee;
+            gap: 1rem;
+        }
+        .verified-item:last-child {
+            border-bottom: none;
+        }
+        .verified-title {
+            flex: 1;
+            word-break: break-word;
+        }
+        .verified-source {
+            color: #16a34a;
+            font-size: 0.85rem;
+            white-space: nowrap;
         }
         /* Multi-file archive styles */
         .file-section {
@@ -351,9 +459,17 @@
             </div>
             <button type="submit" id="submitBtn">Analyze References</button>
         </form>
-        <div class="spinner" id="spinner">
-            <div class="spinner-icon"></div>
-            <span>Analyzing references... This may take a few minutes.</span>
+        <div class="progress-section" id="progressSection">
+            <div class="progress-header">
+                <div class="spinner-icon"></div>
+                <span id="progressHeaderText">Analyzing references...</span>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-status" id="progressStatus">Extracting references...</div>
+            <div class="progress-current" id="progressCurrent"></div>
+            <div class="progress-results" id="progressResults"></div>
         </div>
         <div class="error-message" id="errorMessage"></div>
     </div>
@@ -395,7 +511,12 @@
     <script>
         const form = document.getElementById('analyzeForm');
         const submitBtn = document.getElementById('submitBtn');
-        const spinner = document.getElementById('spinner');
+        const progressSection = document.getElementById('progressSection');
+        const progressBar = document.getElementById('progressBar');
+        const progressStatus = document.getElementById('progressStatus');
+        const progressCurrent = document.getElementById('progressCurrent');
+        const progressResults = document.getElementById('progressResults');
+        const progressHeaderText = document.getElementById('progressHeaderText');
         const errorMessage = document.getElementById('errorMessage');
         const results = document.getElementById('results');
         const openalexKeyInput = document.getElementById('openalexKey');
@@ -405,6 +526,10 @@
         if (savedKey) {
             openalexKeyInput.value = savedKey;
         }
+
+        // Track live results during streaming
+        let liveResults = [];
+        let totalRefs = 0;
 
         function createScholarLink(title) {
             const encoded = encodeURIComponent(title);
@@ -474,17 +599,21 @@
             if (data.summary.title_only > 0) {
                 detailParts.push(`Title-only (no authors extracted): ${data.summary.title_only}`);
             }
+            if (data.summary.total_timeouts > 0) {
+                detailParts.push(`DB timeouts: ${data.summary.total_timeouts} (retried ${data.summary.retried_count}, ${data.summary.retry_successes} recovered)`);
+            }
             skippedDetails.textContent = detailParts.join(' | ');
 
             // Show standard summary and hallucinations sections
             document.querySelector('.summary').style.display = 'block';
             document.getElementById('hallucinations').style.display = 'block';
 
-            // Render hallucinations
+            // Render all results
             const list = document.getElementById('hallucinationList');
             list.innerHTML = '';
 
             const hallucinations = data.results.filter(r => r.status !== 'verified');
+            const verified = data.results.filter(r => r.status === 'verified');
 
             if (hallucinations.length === 0) {
                 list.innerHTML = '<div class="no-hallucinations">All references verified!</div>';
@@ -492,6 +621,30 @@
                 hallucinations.forEach(ref => {
                     list.appendChild(renderHallucination(ref));
                 });
+            }
+
+            // Show verified references in collapsible section
+            if (verified.length > 0) {
+                const verifiedSection = document.createElement('div');
+                verifiedSection.className = 'verified-section';
+                verifiedSection.innerHTML = `
+                    <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
+                        <span>Verified References (${verified.length})</span>
+                        <span class="verified-toggle">▼</span>
+                    </div>
+                    <div class="verified-list"></div>
+                `;
+                const verifiedList = verifiedSection.querySelector('.verified-list');
+                verified.forEach(ref => {
+                    const item = document.createElement('div');
+                    item.className = 'verified-item';
+                    item.innerHTML = `
+                        <span class="verified-title">${escapeHtml(ref.title)}</span>
+                        <span class="verified-source">${escapeHtml(ref.source || 'Unknown')}</span>
+                    `;
+                    verifiedList.appendChild(item);
+                });
+                list.appendChild(verifiedSection);
             }
         }
 
@@ -623,10 +776,52 @@
             return html;
         }
 
+        function resetProgressUI() {
+            liveResults = [];
+            totalRefs = 0;
+            progressBar.style.width = '0%';
+            progressStatus.textContent = 'Extracting references...';
+            progressCurrent.textContent = '';
+            progressResults.innerHTML = '';
+            progressHeaderText.textContent = 'Analyzing references...';
+        }
+
+        function addProgressResult(data) {
+            const item = document.createElement('div');
+            item.className = 'progress-result-item';
+
+            let statusClass = '';
+            let statusText = '';
+            if (data.status === 'verified') {
+                statusClass = 'progress-result-verified';
+                statusText = `VERIFIED (${data.source})`;
+            } else if (data.status === 'author_mismatch') {
+                statusClass = 'progress-result-mismatch';
+                statusText = `MISMATCH (${data.source})`;
+            } else {
+                statusClass = 'progress-result-notfound';
+                statusText = 'NOT FOUND';
+            }
+
+            const shortTitle = data.title.length > 50 ? data.title.substring(0, 50) + '...' : data.title;
+            item.innerHTML = `<span class="${statusClass}">[${data.index + 1}/${data.total}]</span> ${escapeHtml(shortTitle)} - <span class="${statusClass}">${statusText}</span>`;
+
+            progressResults.appendChild(item);
+            progressResults.scrollTop = progressResults.scrollHeight;
+        }
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
             const formData = new FormData(form);
+            const fileInput = document.getElementById('pdfFile');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                errorMessage.textContent = 'Please select a file';
+                errorMessage.classList.add('visible');
+                return;
+            }
 
             // Save OpenAlex API key to localStorage
             const keyValue = openalexKeyInput.value.trim();
@@ -638,40 +833,158 @@
 
             // Reset UI
             submitBtn.disabled = true;
-            spinner.classList.add('visible');
+            resetProgressUI();
+            progressSection.classList.add('visible');
             errorMessage.classList.remove('visible');
             results.classList.remove('visible');
 
+            // Check if file is an archive (use regular fetch for archives)
+            const isArchive = file.name.toLowerCase().endsWith('.zip') ||
+                              file.name.toLowerCase().endsWith('.tar.gz') ||
+                              file.name.toLowerCase().endsWith('.tgz');
+
+            if (isArchive) {
+                // Use regular fetch for archives (SSE only supports single PDF currently)
+                progressStatus.textContent = 'Processing archive...';
+                try {
+                    const response = await fetch('/analyze', {
+                        method: 'POST',
+                        body: formData,
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok || data.error) {
+                        throw new Error(data.error || 'Analysis failed');
+                    }
+
+                    progressSection.classList.remove('visible');
+
+                    // Reset the hallucinations header visibility
+                    document.getElementById('hallucinations').querySelector('h2').style.display = 'block';
+
+                    if (data.files && data.file_count > 0) {
+                        renderMultiFileResults(data);
+                    } else {
+                        renderSingleFileResults(data);
+                    }
+
+                    results.classList.add('visible');
+
+                } catch (err) {
+                    progressSection.classList.remove('visible');
+                    errorMessage.textContent = err.message;
+                    errorMessage.classList.add('visible');
+                } finally {
+                    submitBtn.disabled = false;
+                }
+                return;
+            }
+
+            // Use SSE for single PDF
             try {
-                const response = await fetch('/analyze', {
+                const response = await fetch('/analyze/stream', {
                     method: 'POST',
                     body: formData,
                 });
 
-                const data = await response.json();
-
-                if (!response.ok || data.error) {
-                    throw new Error(data.error || 'Analysis failed');
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Analysis failed');
                 }
 
-                // Reset the hallucinations header visibility
-                document.getElementById('hallucinations').querySelector('h2').style.display = 'block';
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
 
-                // Check if this is a multi-file result
-                if (data.files && data.file_count > 0) {
-                    renderMultiFileResults(data);
-                } else {
-                    renderSingleFileResults(data);
+                // Process SSE events - split by double newline
+                function processEvent(eventText) {
+                    const lines = eventText.trim().split('\n');
+                    let eventType = null;
+                    let eventData = null;
+
+                    for (const line of lines) {
+                        if (line.startsWith('event:')) {
+                            eventType = line.substring(6).trim();
+                        } else if (line.startsWith('data:')) {
+                            try {
+                                eventData = JSON.parse(line.substring(5).trim());
+                            } catch (e) {
+                                console.error('Failed to parse SSE data:', line);
+                            }
+                        }
+                    }
+
+                    if (!eventType || !eventData) return;
+
+                    console.log('SSE event:', eventType, eventData);
+
+                    if (eventType === 'extraction_complete') {
+                        totalRefs = eventData.total_refs;
+                        progressStatus.textContent = `Found ${totalRefs} references to check`;
+                        progressHeaderText.textContent = `Checking ${totalRefs} references...`;
+                    } else if (eventType === 'retry_pass') {
+                        progressStatus.textContent = `Retrying ${eventData.count} references that had timeouts...`;
+                        progressHeaderText.textContent = `Retry pass...`;
+                    } else if (eventType === 'checking') {
+                        const shortTitle = eventData.title.length > 60
+                            ? eventData.title.substring(0, 60) + '...'
+                            : eventData.title;
+                        progressCurrent.textContent = `[${eventData.index + 1}/${eventData.total}] Checking: "${shortTitle}"`;
+                        const pct = ((eventData.index) / eventData.total) * 100;
+                        progressBar.style.width = pct + '%';
+                    } else if (eventType === 'result') {
+                        liveResults.push(eventData);
+                        addProgressResult(eventData);
+                        const pct = ((eventData.index + 1) / eventData.total) * 100;
+                        progressBar.style.width = pct + '%';
+
+                        // Update status with running totals
+                        const verified = liveResults.filter(r => r.status === 'verified').length;
+                        const notFound = liveResults.filter(r => r.status === 'not_found').length;
+                        const mismatch = liveResults.filter(r => r.status === 'author_mismatch').length;
+                        progressStatus.textContent = `Checked ${eventData.index + 1}/${eventData.total}: ${verified} verified, ${notFound} not found, ${mismatch} mismatched`;
+                    } else if (eventType === 'complete') {
+                        // Analysis complete - render full results
+                        progressSection.classList.remove('visible');
+
+                        // Reset the hallucinations header visibility
+                        document.getElementById('hallucinations').querySelector('h2').style.display = 'block';
+
+                        renderSingleFileResults({
+                            summary: eventData.summary,
+                            results: eventData.results,
+                        });
+
+                        results.classList.add('visible');
+                    } else if (eventType === 'error') {
+                        throw new Error(eventData.message || 'Analysis failed');
+                    }
                 }
 
-                results.classList.add('visible');
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // SSE events are separated by double newlines
+                    const events = buffer.split('\n\n');
+                    buffer = events.pop(); // Keep incomplete event in buffer
+
+                    for (const eventText of events) {
+                        if (eventText.trim()) {
+                            processEvent(eventText);
+                        }
+                    }
+                }
 
             } catch (err) {
+                progressSection.classList.remove('visible');
                 errorMessage.textContent = err.message;
                 errorMessage.classList.add('visible');
             } finally {
                 submitBtn.disabled = false;
-                spinner.classList.remove('visible');
             }
         });
     </script>
