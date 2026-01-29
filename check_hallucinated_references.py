@@ -403,8 +403,8 @@ def clean_title(title, from_quotes=False):
 
     # Remove trailing journal/venue info that might have been included
     cutoff_patterns = [
-        r'\.\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR).*$',
-        r'\.\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$',
+        r'[.?!]\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR).*$',
+        r'[.?!]\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$',
         r'[.?!]\s+International\s+Journal\b.*$',  # "? International Journal" or ". International Journal"
         r'\.\s*[A-Z][a-z]+\s+(?:Journal|Review|Transactions|Letters|advances|Processing|medica|Intelligenz)\b.*$',
         r'\.\s*(?:Patterns|Data\s+&\s+Knowledge).*$',
