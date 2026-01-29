@@ -88,8 +88,11 @@ python check_hallucinated_references.py --output log.txt <path_to_pdf>
 # Use OpenAlex API for improved coverage
 python check_hallucinated_references.py --openalex-key=YOUR_API_KEY <path_to_pdf>
 
+# Use Semantic Scholar API key to avoid rate limiting
+python check_hallucinated_references.py --s2-api-key=YOUR_API_KEY <path_to_pdf>
+
 # Combine options
-python check_hallucinated_references.py --no-color --output results.txt --openalex-key=KEY <path_to_pdf>
+python check_hallucinated_references.py --no-color --output results.txt --openalex-key=KEY --s2-api-key=KEY <path_to_pdf>
 ```
 
 ### Options
@@ -99,6 +102,7 @@ python check_hallucinated_references.py --no-color --output results.txt --openal
 | `--no-color` | Disable colored output (useful for piping or logging) |
 | `--output=FILE` | Save output to a file |
 | `--openalex-key=KEY` | OpenAlex API key for improved coverage. Get a free key at https://openalex.org/settings/api |
+| `--s2-api-key=KEY` | Semantic Scholar API key to avoid rate limiting. Request at https://www.semanticscholar.org/product/api |
 
 ## Web Interface
 

@@ -18,7 +18,7 @@ pip install -r requirements.txt
 ### CLI Usage
 ```bash
 python check_hallucinated_references.py <path_to_pdf>
-python check_hallucinated_references.py --no-color --openalex-key=KEY <pdf>
+python check_hallucinated_references.py --no-color --openalex-key=KEY --s2-api-key=KEY <pdf>
 python check_hallucinated_references.py --output log.txt <pdf>
 ```
 

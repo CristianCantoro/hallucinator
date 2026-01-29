@@ -474,6 +474,13 @@
                 </label>
                 <input type="text" id="openalexKey" name="openalex_key" placeholder="Enter your OpenAlex API key">
             </div>
+            <div class="form-group">
+                <label for="s2ApiKey">
+                    Semantic Scholar API Key
+                    <span class="label-hint">(optional, avoids rate limiting)</span>
+                </label>
+                <input type="text" id="s2ApiKey" name="s2_api_key" placeholder="Enter your Semantic Scholar API key">
+            </div>
             <button type="submit" id="submitBtn">Analyze References</button>
         </form>
         <div class="progress-section" id="progressSection">
@@ -538,11 +545,16 @@
         const errorMessage = document.getElementById('errorMessage');
         const results = document.getElementById('results');
         const openalexKeyInput = document.getElementById('openalexKey');
+        const s2ApiKeyInput = document.getElementById('s2ApiKey');
 
-        // Load saved OpenAlex API key from localStorage
-        const savedKey = localStorage.getItem('openalexKey');
-        if (savedKey) {
-            openalexKeyInput.value = savedKey;
+        // Load saved API keys from localStorage
+        const savedOpenalexKey = localStorage.getItem('openalexKey');
+        if (savedOpenalexKey) {
+            openalexKeyInput.value = savedOpenalexKey;
+        }
+        const savedS2Key = localStorage.getItem('s2ApiKey');
+        if (savedS2Key) {
+            s2ApiKeyInput.value = savedS2Key;
         }
 
         // Track live results during streaming
@@ -938,12 +950,18 @@
                 return;
             }
 
-            // Save OpenAlex API key to localStorage
-            const keyValue = openalexKeyInput.value.trim();
-            if (keyValue) {
-                localStorage.setItem('openalexKey', keyValue);
+            // Save API keys to localStorage
+            const openalexKeyValue = openalexKeyInput.value.trim();
+            if (openalexKeyValue) {
+                localStorage.setItem('openalexKey', openalexKeyValue);
             } else {
                 localStorage.removeItem('openalexKey');
+            }
+            const s2KeyValue = s2ApiKeyInput.value.trim();
+            if (s2KeyValue) {
+                localStorage.setItem('s2ApiKey', s2KeyValue);
+            } else {
+                localStorage.removeItem('s2ApiKey');
             }
 
             // Reset UI
