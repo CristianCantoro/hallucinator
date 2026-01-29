@@ -358,8 +358,10 @@ def clean_title(title, from_quotes=False):
     cutoff_patterns = [
         r'\.\s*(?:Proceedings|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|EMNLP|NAACL|arXiv|Available|CoRR).*$',
         r'\.\s*(?:Advances\s+in|Journal\s+of|Transactions\s+of|Transactions\s+on|Communications\s+of).*$',
+        r'[.?!]\s+International\s+Journal\b.*$',  # "? International Journal" or ". International Journal"
         r'\.\s*[A-Z][a-z]+\s+(?:Journal|Review|Transactions|Letters|advances|Processing|medica|Intelligenz)\b.*$',
         r'\.\s*(?:Patterns|Data\s+&\s+Knowledge).*$',
+        r'[.,]\s+[A-Z][a-z]+\s+\d+[,\s].*$',  # ". Word Number" or ", Word Number" (journal format like ". Science 344,")
         r',\s*volume\s+\d+.*$',  # ", volume 15"
         r',\s*\d+\s*\(\d+\).*$',  # Volume(issue) pattern
         r',\s*\d+\s*$',  # Trailing volume number
@@ -385,8 +387,15 @@ def clean_title(title, from_quotes=False):
     return title.strip()
 
 
+# Abbreviations that should NEVER be sentence boundaries (mid-title abbreviations)
+MID_SENTENCE_ABBREVIATIONS = {'vs', 'eg', 'ie', 'cf', 'fig', 'figs', 'eq', 'eqs', 'sec', 'ch', 'pt', 'no'}
+
+# Abbreviations that ARE sentence boundaries when followed by a capitalized content word
+# (e.g., "et al." followed by a title)
+END_OF_AUTHOR_ABBREVIATIONS = {'al'}
+
 def split_sentences_skip_initials(text):
-    """Split text into sentences, but skip periods that are author initials (e.g., 'M.' 'J.')."""
+    """Split text into sentences, but skip periods that are author initials (e.g., 'M.' 'J.') or mid-sentence abbreviations (e.g., 'vs.')."""
     sentences = []
     current_start = 0
 
@@ -398,6 +407,20 @@ def split_sentences_skip_initials(text):
             # If char before is a single capital (and char before that is space/start), it's an initial
             if char_before.isupper() and (pos == 1 or not text[pos-2].isalpha()):
                 continue  # Skip this period - it's an initial
+
+            # Check if this period follows a common abbreviation
+            # Find the word before the period
+            word_start = pos - 1
+            while word_start > 0 and text[word_start-1].isalpha():
+                word_start -= 1
+            word_before = text[word_start:pos].lower()
+
+            # Mid-sentence abbreviations are never sentence boundaries
+            if word_before in MID_SENTENCE_ABBREVIATIONS:
+                continue  # Skip this period - it's a mid-sentence abbreviation
+
+            # "et al." is a sentence boundary (ends author list)
+            # Don't skip it - let it be treated as a sentence boundary
 
         # This is a real sentence boundary
         sentences.append(text[current_start:pos].strip())
@@ -448,6 +471,7 @@ def extract_title_from_reference(ref_text):
                     r'\.\s*\((?:19|20)\d{2}\)', # ". (2022)" style venue year
                     r'[,\.]\s*(?:19|20)\d{2}',  # year
                     r'\s+(?:19|20)\d{2}\.',     # year at end
+                    r'[.,]\s+[A-Z][a-z]+\s+\d+[,\s]',  # ". Word Number" journal format (". Science 344,")
                 ]
                 subtitle_end = len(subtitle_text)
                 for ep in end_patterns:
