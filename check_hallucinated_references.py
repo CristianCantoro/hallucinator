@@ -246,9 +246,9 @@ def segment_references(ref_text):
     # Pattern matches: "Avalle, M.", "Camacho-collados, J.", "Del Vicario, M.", "Van Bavel, J."
     # Must be preceded by period+newline (end of previous reference) to avoid matching
     # author names that wrap to new lines mid-reference
-    # Use [a-z0-9)] before period to exclude author initials (which are uppercase like "A.")
-    # This ensures we only match after page numbers (digits), venue names (lowercase), or volume/issue like 118(9).
-    aaai_pattern = r'[a-z0-9)]\.\n([A-Z][a-zA-Z]+(?:[ -][A-Za-z]+)?,\s+[A-Z]\.)'
+    # Match after: lowercase letter, digit, closing paren, or 2+ uppercase letters (venue abbrevs like CSCW, CHI)
+    # Single uppercase letter excluded to avoid matching author initials like "A."
+    aaai_pattern = r'(?:[a-z0-9)]|[A-Z]{2})\.\n([A-Z][a-zA-Z]+(?:[ -][A-Za-z]+)?,\s+[A-Z]\.)'
     aaai_matches = list(re.finditer(aaai_pattern, ref_text))
 
     if len(aaai_matches) >= 3:
@@ -527,6 +527,13 @@ def extract_title_from_reference(ref_text):
         if match:
             quoted_part = match.group(1).strip()
             after_quote = ref_text[match.end():].strip()
+
+            # IEEE format: comma inside quotes ("Title,") means title is complete
+            # What follows is venue/journal, not a subtitle - skip subtitle detection
+            if quoted_part.endswith(','):
+                if len(quoted_part.split()) >= 3:
+                    return quoted_part, True
+                continue  # Try next quote pattern
 
             # Check if there's a subtitle after the quote
             # Can start with : or - or directly with a capital letter
