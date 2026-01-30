@@ -626,6 +626,31 @@ def extract_title_from_reference(ref_text):
             if len(title.split()) >= 3:
                 return title, False  # from_quotes=False
 
+    # === Format 5: ALL CAPS authors (e.g., "SURNAME, F., AND SURNAME, G. Title here.") ===
+    # Detect transition from ALL CAPS to mixed case as title start
+    all_caps_match = re.search(r'^([A-Z][A-Z\s,.\-\']+(?:AND|ET\s+AL\.?)?[A-Z,.\s]+)\s+([A-Z][a-z])', ref_text)
+    if all_caps_match:
+        title_start = all_caps_match.start(2)
+        title_text = ref_text[title_start:]
+        # Find title end at venue markers
+        title_end_patterns = [
+            r'\.\s*[Ii]n\s+[A-Z]',  # ". In Proceedings"
+            r'\.\s*(?:Proceedings|IEEE|ACM|USENIX|NDSS|arXiv|Technical\s+report)',
+            r'\.\s*[A-Z][a-z]+\s+\d+,\s*\d+\s*\(',  # ". Journal 55, 3 (2012)"
+            r'\.\s*(?:Ph\.?D\.?\s+thesis|Master.s\s+thesis)',
+        ]
+        title_end = len(title_text)
+        for pattern in title_end_patterns:
+            m = re.search(pattern, title_text)
+            if m:
+                title_end = min(title_end, m.start())
+
+        if title_end > 0:
+            title = title_text[:title_end].strip()
+            title = re.sub(r'\.\s*$', '', title)
+            if len(title.split()) >= 3:
+                return title, False
+
     # === Fallback: second sentence if it looks like a title ===
     # Use smart splitting that skips author initials like "M." "J."
     sentences = split_sentences_skip_initials(ref_text)
@@ -969,6 +994,54 @@ def query_semantic_scholar(title, api_key=None):
         raise  # Re-raise so failed_dbs gets tracked
     return None, [], None
 
+def query_ssrn(title):
+    """Query SSRN (Social Science Research Network) for paper information.
+
+    SSRN hosts working papers and preprints in social sciences, economics,
+    law, and humanities.
+    """
+    words = get_query_words(title, 6)
+    query = ' '.join(words)
+    url = "https://papers.ssrn.com/sol3/results.cfm"
+    params = {'txtKey_Words': query}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=get_timeout())
+        if response.status_code == 429:
+            raise Exception("Rate limited (429)")
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}")
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Find paper titles - they're in <a class="title"> tags
+        title_links = soup.select('a.title')
+
+        for link in title_links[:10]:  # Check first 10 results
+            found_title = link.get_text().strip()
+            if found_title and fuzz.ratio(normalize_title(title), normalize_title(found_title)) >= 95:
+                # Extract paper URL from the link
+                href = link.get('href', '')
+                paper_url = href if href.startswith('http') else f"https://papers.ssrn.com{href}" if href else None
+
+                # Try to find authors - they're typically in nearby elements
+                authors = []
+                parent = link.find_parent('div')
+                if parent:
+                    author_elem = parent.find('span', class_='authors')
+                    if author_elem:
+                        authors = [a.strip() for a in author_elem.get_text().split(',') if a.strip()]
+
+                return found_title, authors, paper_url
+    except Exception as e:
+        print(f"[Error] SSRN search failed: {e}")
+        raise  # Re-raise so failed_dbs gets tracked
+    return None, [], None
+
+
 def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api_key=None, longer_timeout=False, only_dbs=None, dblp_offline_path=None):
     """Query all databases concurrently for a single reference.
 
@@ -1009,6 +1082,7 @@ def query_all_databases_concurrent(title, ref_authors, openalex_key=None, s2_api
         dblp_query,
         # ('OpenReview', lambda: query_openreview(title)),  # Disabled - API unreachable
         ('Semantic Scholar', lambda: query_semantic_scholar(title, s2_api_key)),
+        ('SSRN', lambda: query_ssrn(title)),
         ('ACL Anthology', lambda: query_acl(title)),
         ('NeurIPS', lambda: query_neurips(title)),
     ]
