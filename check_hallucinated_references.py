@@ -1286,11 +1286,15 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
 
 def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None):
     # Print OpenReview warning
-    print(f"{Colors.YELLOW}OpenReview Disabled: On Nov 27, 2025, bad actors exploited an API vulnerability")
-    print(f"to deanonymize 45% of ICLR 2026 (~10k papers), leaking reviewer/author identities.")
-    print(f"The data was used for harassment, bribery, and author-reviewer collusion - a direct")
-    print(f"attack on peer review integrity, amid a flood of LLM-generated slop submissions.")
-    print(f"The API is currently unreachable. This is why tools like this need to exist.{Colors.RESET}")
+    print(f"{Colors.YELLOW}OpenReview Disabled: On Nov 27, 2025, an OpenReview API vulnerability was exploited")
+    print(f"to deanonymize ~10k ICLR 2026 papers, leaking reviewer/author/AC identities.")
+    print(f"The leaked data was used for harassment, bribery, and author-reviewer collusion.")
+    print(f"Analysis found 21% of reviews were fully AI-generated; 199 papers were pure AI slop.")
+    print(f"This is why tools like this need to exist. The API remains unreachable.")
+    print(f"")
+    print(f"Sources:")
+    print(f"  - ICLR Official: https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/")
+    print(f"  - Science/AAAS: https://www.science.org/content/article/hack-reveals-reviewer-identities-huge-ai-conference{Colors.RESET}")
     print()
 
     # Extract references

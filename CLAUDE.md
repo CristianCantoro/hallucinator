@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Hallucinated Reference Detector** - Detects potentially fabricated references in academic PDF papers by validating against multiple academic databases (CrossRef, arXiv, DBLP, Semantic Scholar, ACL Anthology, NeurIPS, and optionally OpenAlex).
 
+**Read [MANIFESTO.md](MANIFESTO.md)** for the mission statement and context on why this tool exists, including documentation of the November 2025 OpenReview incident and a note on human-AI collaboration written by Claude during development.
+
 ## Commands
 
 ### Installation
@@ -56,7 +58,7 @@ docker run -p 5001:5001 hallucinator
 - CrossRef
 - arXiv
 - DBLP
-- ~~OpenReview~~ (disabled - API unreachable after Nov 2025 security incident that leaked 45% of ICLR 2026 reviewer/author identities, leading to harassment, bribery, and collusion)
+- ~~OpenReview~~ (disabled - API unreachable after Nov 2025 incident; see [MANIFESTO.md](MANIFESTO.md) for details)
 - Semantic Scholar
 - ACL Anthology
 - NeurIPS
