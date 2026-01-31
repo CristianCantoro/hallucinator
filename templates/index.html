@@ -6,6 +6,36 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <title>Hallucinated Reference Checker</title>
     <style>
+        :root {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: white;
+            --bg-tertiary: #fafafa;
+            --text-primary: #333;
+            --text-secondary: #666;
+            --text-heading: #1a1a1a;
+            --border-color: #ddd;
+            --shadow-color: rgba(0,0,0,0.1);
+            --link-color: #2563eb;
+            --drop-zone-border: #9ca3af;
+            --drop-zone-bg: #f9fafb;
+            --drop-zone-active-bg: #eff6ff;
+            --drop-zone-active-border: #2563eb;
+        }
+        .dark {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #2d2d2d;
+            --bg-tertiary: #363636;
+            --text-primary: #e5e5e5;
+            --text-secondary: #a0a0a0;
+            --text-heading: #f5f5f5;
+            --border-color: #444;
+            --shadow-color: rgba(0,0,0,0.3);
+            --link-color: #60a5fa;
+            --drop-zone-border: #555;
+            --drop-zone-bg: #252525;
+            --drop-zone-active-bg: #1e3a5f;
+            --drop-zone-active-border: #60a5fa;
+        }
         * {
             box-sizing: border-box;
         }
@@ -14,23 +44,85 @@
             max-width: 900px;
             margin: 0 auto;
             padding: 2rem;
-            background: #f5f5f5;
-            color: #333;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            transition: background 0.3s, color 0.3s;
         }
         h1 {
-            color: #1a1a1a;
+            color: var(--text-heading);
             margin-bottom: 0.5rem;
         }
         .subtitle {
-            color: #666;
+            color: var(--text-secondary);
             margin-bottom: 2rem;
         }
+        .subtitle a {
+            color: var(--link-color);
+        }
         .upload-form {
-            background: white;
+            background: var(--bg-secondary);
             padding: 2rem;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow-color);
             margin-bottom: 2rem;
+        }
+        /* Dark mode toggle */
+        .theme-toggle {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            box-shadow: 0 2px 4px var(--shadow-color);
+            transition: all 0.2s;
+            z-index: 1000;
+        }
+        .theme-toggle:hover {
+            transform: scale(1.1);
+        }
+        /* Drop zone */
+        .drop-zone {
+            border: 2px dashed var(--drop-zone-border);
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: var(--drop-zone-bg);
+        }
+        .drop-zone:hover {
+            border-color: var(--link-color);
+        }
+        .drop-zone.drag-over {
+            border-color: var(--drop-zone-active-border);
+            background: var(--drop-zone-active-bg);
+        }
+        .drop-zone-text {
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+        .drop-zone-hint {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        .drop-zone-file {
+            margin-top: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            display: inline-block;
+            font-size: 0.9rem;
+        }
+        .drop-zone input[type="file"] {
+            display: none;
         }
         .form-group {
             margin-bottom: 1rem;
@@ -42,19 +134,20 @@
         }
         .label-hint {
             font-weight: normal;
-            color: #666;
+            color: var(--text-secondary);
             font-size: 0.9em;
         }
-        input[type="file"],
         input[type="text"] {
             width: 100%;
             padding: 0.75rem;
-            border: 1px solid #ddd;
+            border: 1px solid var(--border-color);
             border-radius: 4px;
             font-size: 1rem;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
         }
-        input[type="file"] {
-            background: #fafafa;
+        input[type="text"]::placeholder {
+            color: var(--text-secondary);
         }
         .checkbox-group {
             margin-top: 0.5rem;
@@ -143,14 +236,14 @@
             max-height: 200px;
             overflow-y: auto;
             font-size: 0.85rem;
-            border: 1px solid #e5e7eb;
+            border: 1px solid var(--border-color);
             border-radius: 4px;
             padding: 0.5rem;
-            background: #fafafa;
+            background: var(--bg-tertiary);
         }
         .progress-result-item {
             padding: 0.25rem 0;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border-color);
         }
         .progress-result-item:last-child {
             border-bottom: none;
@@ -171,15 +264,16 @@
             display: block;
         }
         .summary {
-            background: white;
+            background: var(--bg-secondary);
             padding: 1.5rem;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow-color);
             margin-bottom: 1.5rem;
         }
         .summary h2 {
             margin-top: 0;
             margin-bottom: 1rem;
+            color: var(--text-heading);
         }
         .stats {
             display: flex;
@@ -194,7 +288,7 @@
             font-weight: bold;
         }
         .stat-label {
-            color: #666;
+            color: var(--text-secondary);
             font-size: 0.9rem;
         }
         .stat-verified .stat-value { color: #16a34a; }
@@ -202,7 +296,7 @@
         .stat-notfound .stat-value { color: #dc2626; }
         .stat-skipped .stat-value { color: #6b7280; }
         .skipped-details {
-            color: #6b7280;
+            color: var(--text-secondary);
             font-size: 0.85rem;
             margin-top: 0.5rem;
         }
@@ -216,19 +310,20 @@
             color: #16a34a;
         }
         .hallucinations {
-            background: white;
+            background: var(--bg-secondary);
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow-color);
             overflow: hidden;
         }
         .hallucinations h2 {
             margin: 0;
             padding: 1.5rem;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-heading);
         }
         .reference {
             padding: 1.5rem;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border-color);
         }
         .reference:last-child {
             border-bottom: none;
@@ -254,7 +349,7 @@
             color: #ca8a04;
         }
         .author-comparison {
-            background: #f9fafb;
+            background: var(--bg-tertiary);
             padding: 1rem;
             border-radius: 4px;
             margin-bottom: 0.75rem;
@@ -263,7 +358,7 @@
         .author-comparison h4 {
             margin: 0 0 0.5rem 0;
             font-size: 0.85rem;
-            color: #666;
+            color: var(--text-secondary);
         }
         .author-list {
             margin: 0;
@@ -404,7 +499,7 @@
             color: #16a34a;
         }
         .verified-section {
-            border-top: 1px solid #eee;
+            border-top: 1px solid var(--border-color);
             margin-top: 1rem;
         }
         .verified-header {
@@ -440,7 +535,7 @@
             justify-content: space-between;
             align-items: center;
             padding: 0.75rem 1.5rem;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border-color);
             gap: 1rem;
         }
         .verified-item:last-child {
@@ -572,6 +667,7 @@
     </style>
 </head>
 <body>
+    <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">🌙</button>
     <div class="header">
         <img src="/static/logo.png" alt="Logo" class="logo">
         <div class="header-text">
@@ -590,8 +686,13 @@
     <div class="upload-form">
         <form id="analyzeForm">
             <div class="form-group">
-                <label for="pdfFile">PDF File or Archive (.zip, .tar.gz)</label>
-                <input type="file" id="pdfFile" name="pdf" accept=".pdf,.zip,.tar.gz,.tgz" required>
+                <label>PDF File or Archive (.zip, .tar.gz)</label>
+                <div class="drop-zone" id="dropZone">
+                    <input type="file" id="pdfFile" name="pdf" accept=".pdf,.zip,.tar.gz,.tgz" required>
+                    <div class="drop-zone-text">📄 Drag & drop your file here</div>
+                    <div class="drop-zone-hint">or click to browse</div>
+                    <div class="drop-zone-file" id="selectedFile" style="display: none;"></div>
+                </div>
             </div>
             <div class="form-group">
                 <label for="openalexKey">
@@ -707,6 +808,58 @@
         const savedCheckOpenalexAuthors = localStorage.getItem('checkOpenalexAuthors');
         if (savedCheckOpenalexAuthors === 'true') {
             checkOpenalexAuthorsInput.checked = true;
+        }
+
+        // Dark mode toggle
+        const themeToggle = document.getElementById('themeToggle');
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.body.classList.add('dark');
+            themeToggle.textContent = '☀️';
+        }
+        themeToggle.addEventListener('click', () => {
+            document.body.classList.toggle('dark');
+            const isDark = document.body.classList.contains('dark');
+            themeToggle.textContent = isDark ? '☀️' : '🌙';
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+        });
+
+        // Drag and drop file upload
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('pdfFile');
+        const selectedFileDiv = document.getElementById('selectedFile');
+
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                updateSelectedFile(files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                updateSelectedFile(fileInput.files[0]);
+            }
+        });
+
+        function updateSelectedFile(file) {
+            selectedFileDiv.textContent = '📎 ' + file.name;
+            selectedFileDiv.style.display = 'inline-block';
         }
 
         // Track live results during streaming
