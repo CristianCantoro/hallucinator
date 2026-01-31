@@ -1186,30 +1186,55 @@
             }
         }
 
-        async function findReferenceInPdf(title) {
+        function handleFindInPdf(btn) {
+            const title = btn.dataset.title || '';
+            let authors = [];
+            try {
+                authors = JSON.parse(btn.dataset.authors || '[]');
+            } catch (e) {
+                console.error('Error parsing authors:', e);
+            }
+            findReferenceInPdf(title, authors);
+        }
+
+        async function findReferenceInPdf(title, authors = []) {
             if (!pdfDoc) {
                 alert('No PDF loaded. Please upload a PDF file first.');
                 return;
             }
 
-            // Extract first few significant words for searching
-            const searchWords = title
+            // Extract author last names for anchor search
+            const authorLastNames = authors
+                .map(a => {
+                    // Handle "F. LastName" or "FirstName LastName" formats
+                    const parts = a.trim().split(/\s+/);
+                    // Get the last part that's not an initial
+                    for (let i = parts.length - 1; i >= 0; i--) {
+                        if (parts[i].length > 2 && !parts[i].endsWith('.')) {
+                            return parts[i].toLowerCase().replace(/[^\w]/g, '');
+                        }
+                    }
+                    return null;
+                })
+                .filter(n => n && n.length > 2);
+
+            // Extract title words for verification
+            const titleWords = title
                 .toLowerCase()
                 .replace(/[^\w\s]/g, ' ')
                 .split(/\s+/)
                 .filter(w => w.length > 3)
-                .slice(0, 6);
+                .slice(0, 8);
 
-            if (searchWords.length === 0) {
-                alert('Could not extract search terms from title.');
+            if (titleWords.length === 0 && authorLastNames.length === 0) {
+                alert('Could not extract search terms from reference.');
                 return;
             }
 
-            // Search pages from end to start (references are always at the end)
-            // Return the first match found searching backwards
+            // Search pages from end to start (references are at the end)
             for (let pageNum = pdfDoc.numPages; pageNum >= 1; pageNum--) {
                 try {
-                    const result = await searchPageForText(pageNum, searchWords);
+                    const result = await searchPageForReference(pageNum, authorLastNames, titleWords);
                     if (result.found && result.bounds) {
                         currentPage = pageNum;
 
@@ -1224,7 +1249,6 @@
                         await renderPage(pageNum, highlight);
                         showPdfPreview();
 
-                        // Scroll to the found position
                         const scrollY = result.bounds.y * pdfScale;
                         setTimeout(() => {
                             pdfPreviewContainer.scrollTop = Math.max(0, scrollY - 100);
@@ -1239,7 +1263,7 @@
             alert('Reference not found in PDF. The text may be formatted differently.');
         }
 
-        async function searchPageForText(pageNum, searchWords) {
+        async function searchPageForReference(pageNum, authorLastNames, titleWords) {
             try {
                 const page = await pdfDoc.getPage(pageNum);
                 const textContent = await page.getTextContent();
@@ -1249,122 +1273,142 @@
                 const textItems = [];
                 for (const item of textContent.items) {
                     if (!item.str) continue;
-                    // Transform: [scaleX, skewX, skewY, scaleY, translateX, translateY]
                     const x = item.transform ? item.transform[4] : 0;
                     const y = item.transform ? viewport.height - item.transform[5] : 0;
                     const width = item.width || 100;
                     const height = item.height || 12;
-                    // Keep original text and normalized version
                     const normalized = item.str.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
                     if (normalized) {
-                        textItems.push({ text: normalized, x, y, width, height, original: item.str });
+                        textItems.push({ text: normalized, x, y, width, height, original: item.str, index: textItems.length });
                     }
                 }
 
-                // No text items found
                 if (textItems.length === 0) {
                     return { found: false, bounds: null };
                 }
 
-                let bestMatch = null;
-                let bestScore = 0;
-                let bestItemStart = -1;
-
-                // Helper to safely get bounds for item range with padding
-                function getBoundsForRange(startIdx, endIdx) {
-                    const safeStart = Math.max(0, Math.min(startIdx, textItems.length - 1));
-                    const safeEnd = Math.max(safeStart, Math.min(endIdx, textItems.length - 1));
-                    const matchedItems = textItems.slice(safeStart, safeEnd + 1);
-                    if (matchedItems.length === 0) return null;
-                    const padding = 8;
-                    const minX = Math.min(...matchedItems.map(it => it.x)) - padding;
-                    const minY = Math.min(...matchedItems.map(it => it.y)) - padding;
-                    const maxX = Math.max(...matchedItems.map(it => it.x + it.width)) + padding;
-                    const maxY = Math.max(...matchedItems.map(it => it.y + it.height)) + padding;
+                // Helper to get bounds with padding - only for items that match
+                function getBoundsForItems(items) {
+                    if (items.length === 0) return null;
+                    const padding = 5;
+                    const minX = Math.min(...items.map(it => it.x)) - padding;
+                    const minY = Math.min(...items.map(it => it.y)) - padding;
+                    const maxX = Math.max(...items.map(it => it.x + it.width)) + padding;
+                    const maxY = Math.max(...items.map(it => it.y + it.height)) + padding;
                     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
                 }
 
-                // Find items that contain each search word
-                function findItemsContainingWords(words) {
-                    const matchedItems = [];
-                    for (const word of words) {
-                        for (let i = 0; i < textItems.length; i++) {
-                            if (textItems[i].text.includes(word)) {
-                                if (!matchedItems.includes(textItems[i])) {
-                                    matchedItems.push(textItems[i]);
+                // Helper to find items that match any of the search words
+                function getMatchingItems(items, words) {
+                    return items.filter(it => words.some(w => it.text.includes(w)));
+                }
+
+                // Helper to find items near a position (same column + Y range)
+                function getItemsNearby(anchorItem, yRange = 50) {
+                    const anchorX = anchorItem.x;
+                    const anchorY = anchorItem.y;
+                    // Items in same column (X within 200px) and Y range
+                    return textItems.filter(it =>
+                        Math.abs(it.y - anchorY) < yRange &&
+                        Math.abs(it.x - anchorX) < 200
+                    );
+                }
+
+                // Helper to count matching words in items
+                function countMatchingWords(items, words) {
+                    const itemText = items.map(it => it.text).join(' ');
+                    return words.filter(w => itemText.includes(w)).length;
+                }
+
+                let bestMatch = null;
+                let bestScore = 0;
+                let bestMatchingItems = [];
+
+                // Combine all search terms
+                const allSearchTerms = [...authorLastNames, ...titleWords];
+
+                // Strategy 1: Use author last names as anchors (most reliable)
+                if (authorLastNames.length > 0) {
+                    const primaryAuthor = authorLastNames[0];
+
+                    for (let i = 0; i < textItems.length; i++) {
+                        if (textItems[i].text.includes(primaryAuthor)) {
+                            const anchorItem = textItems[i];
+                            // Get items in same column and nearby vertically
+                            const nearbyItems = getItemsNearby(anchorItem, 60);
+
+                            // Count matches
+                            let authorMatches = 0;
+                            const matchingItems = [];
+
+                            for (const author of authorLastNames) {
+                                const found = nearbyItems.find(it => it.text.includes(author));
+                                if (found) {
+                                    authorMatches++;
+                                    if (!matchingItems.includes(found)) matchingItems.push(found);
                                 }
-                                break; // Only find first occurrence of each word
+                            }
+
+                            let titleMatches = 0;
+                            for (const word of titleWords) {
+                                const found = nearbyItems.find(it => it.text.includes(word));
+                                if (found) {
+                                    titleMatches++;
+                                    if (!matchingItems.includes(found)) matchingItems.push(found);
+                                }
+                            }
+
+                            const score = authorMatches * 3 + titleMatches;
+
+                            if (score > bestScore && titleMatches >= 2) {
+                                bestScore = score;
+                                bestMatchingItems = matchingItems;
+                                // Bounding box only around matching items
+                                bestMatch = getBoundsForItems(matchingItems);
                             }
                         }
                     }
-                    return matchedItems;
                 }
 
-                // Strategy 1: Find items containing each search word, check if they cluster together
-                const matchedItems = findItemsContainingWords(searchWords);
-
-                if (matchedItems.length >= Math.ceil(searchWords.length * 0.5)) {
-                    // Check if matched items are spatially close (same reference)
-                    const avgY = matchedItems.reduce((sum, it) => sum + it.y, 0) / matchedItems.length;
-                    const ySpread = Math.max(...matchedItems.map(it => it.y)) - Math.min(...matchedItems.map(it => it.y));
-
-                    // If items are within reasonable vertical spread (e.g., 2-3 lines), consider it a match
-                    if (ySpread < 100) {
-                        bestScore = matchedItems.length;
-                        const padding = 8;
-                        const minX = Math.min(...matchedItems.map(it => it.x)) - padding;
-                        const minY = Math.min(...matchedItems.map(it => it.y)) - padding;
-                        const maxX = Math.max(...matchedItems.map(it => it.x + it.width)) + padding;
-                        const maxY = Math.max(...matchedItems.map(it => it.y + it.height)) + padding;
-                        bestMatch = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-                    }
-                }
-
-                // Strategy 2: Find the most distinctive word and highlight around it
-                if (!bestMatch || bestScore < Math.ceil(searchWords.length * 0.5)) {
-                    // Find rarest/longest word as anchor
-                    const anchorWord = searchWords.reduce((a, b) => a.length > b.length ? a : b);
+                // Strategy 2: Fall back to title-word clustering if no author match
+                if (!bestMatch && titleWords.length > 0) {
+                    const anchorWord = titleWords.reduce((a, b) => a.length > b.length ? a : b);
 
                     for (let i = 0; i < textItems.length; i++) {
                         if (textItems[i].text.includes(anchorWord)) {
-                            // Found anchor - find nearby items that match other search words
-                            const anchorY = textItems[i].y;
-                            const nearbyItems = textItems.filter(it =>
-                                Math.abs(it.y - anchorY) < 60 // Within ~3 lines
-                            );
+                            const anchorItem = textItems[i];
+                            const nearbyItems = getItemsNearby(anchorItem, 50);
 
-                            let matchCount = 0;
-                            const matchingNearby = [];
-                            for (const word of searchWords) {
+                            const matchingItems = [];
+                            let titleMatches = 0;
+                            for (const word of titleWords) {
                                 const found = nearbyItems.find(it => it.text.includes(word));
                                 if (found) {
-                                    matchCount++;
-                                    if (!matchingNearby.includes(found)) matchingNearby.push(found);
+                                    titleMatches++;
+                                    if (!matchingItems.includes(found)) matchingItems.push(found);
                                 }
                             }
 
-                            if (matchCount > bestScore && matchingNearby.length > 0) {
-                                bestScore = matchCount;
-                                const padding = 8;
-                                const minX = Math.min(...matchingNearby.map(it => it.x)) - padding;
-                                const minY = Math.min(...matchingNearby.map(it => it.y)) - padding;
-                                const maxX = Math.max(...matchingNearby.map(it => it.x + it.width)) + padding;
-                                const maxY = Math.max(...matchingNearby.map(it => it.y + it.height)) + padding;
-                                bestMatch = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+                            const score = titleMatches;
+
+                            if (score > bestScore && titleMatches >= Math.ceil(titleWords.length * 0.4)) {
+                                bestScore = score;
+                                bestMatchingItems = matchingItems;
+                                bestMatch = getBoundsForItems(matchingItems);
                             }
-                            break; // Use first anchor found
                         }
                     }
                 }
 
-                const threshold = Math.ceil(searchWords.length * 0.5);
+                // Require minimum match quality
+                const minRequired = authorLastNames.length > 0 ? 3 : Math.ceil(titleWords.length * 0.4);
                 return {
-                    found: bestScore >= threshold,
+                    found: bestScore >= minRequired,
                     bounds: bestMatch,
                     score: bestScore
                 };
             } catch (error) {
-                console.error(`Error in searchPageForText for page ${pageNum}:`, error);
+                console.error(`Error in searchPageForReference for page ${pageNum}:`, error);
                 return { found: false, bounds: null, score: 0 };
             }
         }
@@ -1491,7 +1535,9 @@
                     <a href="${createReportUrl(ref)}" target="_blank" class="report-btn">
                         ⚑ Report false positive
                     </a>
-                    <button class="find-in-pdf-btn" onclick="findReferenceInPdf('${escapeHtml(ref.title).replace(/'/g, "\\'")}')">
+                    <button class="find-in-pdf-btn" onclick="handleFindInPdf(this)"
+                            data-title="${escapeHtml(ref.title).replace(/"/g, '&quot;')}"
+                            data-authors='${JSON.stringify(ref.ref_authors || []).replace(/'/g, "&#39;")}'>
                         📍 Find in PDF
                     </button>
                 </div>
