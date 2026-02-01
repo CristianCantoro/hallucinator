@@ -248,7 +248,8 @@ def segment_references(ref_text):
     # author names that wrap to new lines mid-reference
     # Match after: lowercase letter, digit, closing paren, or 2+ uppercase letters (venue abbrevs like CSCW, CHI)
     # Single uppercase letter excluded to avoid matching author initials like "A."
-    aaai_pattern = r'(?:[a-z0-9)]|[A-Z]{2})\.\n([A-Z][a-zA-Z]+(?:[ -][A-Za-z]+)?,\s+[A-Z]\.)'
+    # (?!In\s) negative lookahead excludes "In Surname, I." which indicates editors, not new reference
+    aaai_pattern = r'(?:[a-z0-9)]|[A-Z]{2})\.\n(?!In\s)([A-Z][a-zA-Z]+(?:[ -][A-Za-z]+)?,\s+[A-Z]\.)'
     aaai_matches = list(re.finditer(aaai_pattern, ref_text))
 
     if len(aaai_matches) >= 3:
@@ -601,12 +602,18 @@ def extract_title_from_reference(ref_text):
         if len(title.split()) >= 3:
             return title, False  # from_quotes=False
 
-    # === Format 3: USENIX - "Authors. Title. In/Journal Venue, Year" ===
+    # === Format 3: USENIX/ICML/NeurIPS - "Authors. Title. In Venue, Year" or "Authors. Title. Venue, Year" ===
     # Find venue markers and extract title before them
+    # Order matters: more specific patterns first, generic patterns last
     venue_patterns = [
         r'\.\s*[Ii]n\s+(?:Proceedings|Workshop|Conference|Symposium|AAAI|IEEE|ACM|USENIX)',
         r'\.\s*[Ii]n\s+[A-Z][a-z]+\s+(?:Conference|Workshop|Symposium)',
-        r',\s*(?:19|20)\d{2}\.\s*$',  # Journal format ending with year
+        r'\.\s*[Ii]n\s+(?:The\s+)?(?:\w+\s+)+(?:International\s+)?(?:Conference|Workshop|Symposium)',  # ICML/NeurIPS style
+        r'\.\s*(?:NeurIPS|ICML|ICLR|CVPR|ICCV|ECCV|AAAI|IJCAI|CoRR|JMLR),',  # Common ML venue abbreviations
+        r'\.\s*arXiv\s+preprint',  # arXiv preprint format
+        r'\.\s*[Ii]n\s+[A-Z]',  # Generic ". In X" fallback
+        r',\s*(?:19|20)\d{2}\.\s*(?:URL|$)',  # Year followed by URL or end - arXiv style (last resort)
+        r',\s*(?:19|20)\d{2}\.\s*$',  # Journal format ending with year (last resort)
     ]
 
     for vp in venue_patterns:
@@ -614,16 +621,37 @@ def extract_title_from_reference(ref_text):
         if venue_match:
             before_venue = ref_text[:venue_match.start()].strip()
 
-            # Split into sentences, skipping author initials like "M." "J."
-            # For USENIX: "Authors. Title" - title is after first period
+            # First try: Split into sentences using period boundaries
+            # This works well for IEEE and many other formats: "Authors. Title. Venue"
             parts = split_sentences_skip_initials(before_venue)
             if len(parts) >= 2:
                 title = parts[1].strip()
                 title = re.sub(r'\.\s*$', '', title)
                 if len(title.split()) >= 3:
-                    # Verify it doesn't look like authors
+                    # Verify it doesn't look like authors (Name Name, pattern)
                     if not re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+,', title):
-                        return title, False  # from_quotes=False
+                        return title, False
+
+            # Second try: For ICML/NeurIPS style where authors and title are in same "sentence"
+            # Look for author initial pattern followed by title: "and LastName, I. TitleWords"
+            author_end_pattern = r'(?:,\s+[A-Z]\.(?:[-\s]+[A-Z]\.)*|(?:Jr|Sr|III|II|IV)\.)\s+(.)'
+            all_matches = list(re.finditer(author_end_pattern, before_venue))
+
+            for match in reversed(all_matches):
+                title_start = match.start(1)
+                remaining = before_venue[title_start:]
+
+                # Skip if this looks like start of another author: "X.," or "Lastname,"
+                if re.match(r'^[A-Z]\.,', remaining) or re.match(r'^[A-Z][a-z]+,', remaining):
+                    continue
+
+                title = remaining.strip()
+                title = re.sub(r'\.\s*$', '', title)
+                if len(title.split()) >= 3:
+                    # Verify it doesn't look like authors
+                    if not re.match(r'^[A-Z][a-z]+,\s+[A-Z]\.', title):
+                        return title, False
+                break
 
             break
 
