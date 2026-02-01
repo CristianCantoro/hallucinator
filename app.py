@@ -272,7 +272,11 @@ def analyze_pdf(pdf_path, openalex_key=None, s2_api_key=None, on_progress=None, 
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    dblp_offline_path = os.environ.get("DBLP_OFFLINE_PATH", "")
+    return render_template(
+        "index.html",
+        dblp_offline_path=dblp_offline_path
+    )
 
 
 def analyze_single_pdf(pdf_path, filename, openalex_key=None, s2_api_key=None, dblp_offline_path=None, check_openalex_authors=False):

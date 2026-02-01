@@ -21,6 +21,8 @@
             --drop-zone-bg: #f9fafb;
             --drop-zone-active-bg: #eff6ff;
             --drop-zone-active-border: #2563eb;
+            --input-readonly-bg: #f3f4f6;
+            --input-readonly-text: #6b7280;
         }
         .dark {
             --bg-primary: #1a1a1a;
@@ -36,6 +38,8 @@
             --drop-zone-bg: #252525;
             --drop-zone-active-bg: #1e3a5f;
             --drop-zone-active-border: #60a5fa;
+            --input-readonly-bg: #2a2a2a;
+            --input-readonly-text: #9ca3af;
         }
         * {
             box-sizing: border-box;
@@ -311,6 +315,12 @@
         .checkbox-label input[type="checkbox"] {
             width: auto;
             margin: 0;
+        }
+        input[type="text"][readonly] {
+            background-color: var(--input-readonly-bg);
+            color: var(--input-readonly-text);
+            cursor: not-allowed;
+            opacity: 0.85;
         }
         button {
             background: #2563eb;
@@ -866,6 +876,13 @@
                     <div class="drop-zone-hint">or click to browse</div>
                     <div class="drop-zone-file" id="selectedFile" style="display: none;"></div>
                 </div>
+            </div>
+            <div class="form-group">
+                <label for="dblpOfflinePath">
+                    DBLP Database Offline Path
+                    <span class="label-hint">(optional, if  <code>DBLP_OFFLINE_PATH</code> is set it will be shown here)</span>
+                </label>
+                <input type="text" id="dblpOfflinePath" name="dblp_offline_path" value="{{ dblp_offline_path }}" placeholder="unset" readonly />
             </div>
             <div class="form-group">
                 <label for="openalexKey">
