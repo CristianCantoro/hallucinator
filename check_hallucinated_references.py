@@ -98,6 +98,202 @@ def normalize_title(title):
     title = re.sub(r'[^a-zA-Z0-9]', '', title)
     return title.lower()
 
+
+def extract_doi(text):
+    """Extract DOI from reference text.
+
+    Handles formats like:
+    - 10.1234/example
+    - doi:10.1234/example
+    - https://doi.org/10.1234/example
+    - DOI: 10.1234/example
+
+    Also handles DOIs split across lines (common in PDFs).
+
+    Returns the DOI string (e.g., "10.1234/example") or None if not found.
+    """
+    # First, try to fix DOIs that are split across lines
+    # Pattern 1: DOI ending with a period followed by newline and digits
+    # e.g., "10.1145/3442381.\n3450048" -> "10.1145/3442381.3450048"
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d+)', r'\1\2', text)
+
+    # Pattern 2: DOI ending with a dash followed by newline and continuation
+    # e.g., "10.2478/popets-\n2019-0037" -> "10.2478/popets-2019-0037"
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+-)\s*\n\s*(\S+)', r'\1\2', text_fixed)
+
+    # DOI pattern: 10.XXXX/suffix where suffix can contain various characters
+    # The suffix ends at whitespace, or common punctuation at end of reference
+    doi_pattern = r'10\.\d{4,}/[^\s\]>)}]+'
+
+    match = re.search(doi_pattern, text_fixed)
+    if match:
+        doi = match.group(0)
+        # Clean trailing punctuation that might have been captured
+        doi = doi.rstrip('.,;:')
+        return doi
+    return None
+
+
+def validate_doi(doi):
+    """Validate a DOI by querying doi.org and return metadata.
+
+    Returns a dict with:
+        - valid: True if DOI resolves
+        - title: Paper title from DOI metadata (if valid)
+        - authors: List of author names (if valid)
+        - error: Error message (if invalid)
+    """
+    if not doi:
+        return {'valid': False, 'error': 'No DOI provided'}
+
+    url = f"https://doi.org/{doi}"
+    headers = {
+        "Accept": "application/vnd.citationstyles.csl+json",
+        "User-Agent": "HallucinatedReferenceChecker/1.0"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=get_timeout(), allow_redirects=True)
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                title = data.get("title", "")
+                # Handle title that might be a list
+                if isinstance(title, list):
+                    title = title[0] if title else ""
+
+                authors = []
+                for author in data.get("author", []):
+                    # Build author name from family/given or literal
+                    if "family" in author:
+                        name = author.get("given", "") + " " + author["family"]
+                        authors.append(name.strip())
+                    elif "literal" in author:
+                        authors.append(author["literal"])
+
+                return {
+                    'valid': True,
+                    'title': title,
+                    'authors': authors,
+                    'error': None
+                }
+            except (json.JSONDecodeError, KeyError) as e:
+                return {'valid': False, 'error': f'Failed to parse DOI metadata: {e}'}
+        elif response.status_code == 404:
+            return {'valid': False, 'error': 'DOI not found'}
+        else:
+            return {'valid': False, 'error': f'DOI lookup failed: HTTP {response.status_code}'}
+
+    except requests.exceptions.Timeout:
+        return {'valid': False, 'error': 'DOI lookup timed out'}
+    except requests.exceptions.RequestException as e:
+        return {'valid': False, 'error': f'DOI lookup failed: {e}'}
+
+
+def check_doi_match(doi_result, ref_title, ref_authors):
+    """Check if DOI metadata matches the reference.
+
+    Returns a dict with:
+        - status: 'verified' | 'title_mismatch' | 'author_mismatch' | 'invalid'
+        - message: Human-readable description
+        - doi_title: Title from DOI (if valid)
+        - doi_authors: Authors from DOI (if valid)
+    """
+    if not doi_result['valid']:
+        return {
+            'status': 'invalid',
+            'message': doi_result['error'],
+            'doi_title': None,
+            'doi_authors': []
+        }
+
+    doi_title = doi_result['title']
+    doi_authors = doi_result['authors']
+
+    # Check title match using fuzzy matching
+    ref_norm = normalize_title(ref_title)
+    doi_norm = normalize_title(doi_title)
+
+    # Multiple matching strategies:
+    # 1. Full fuzzy match (for identical or nearly identical titles)
+    title_ratio = fuzz.ratio(ref_norm, doi_norm)
+
+    # 2. Check if DOI title is a prefix of reference title
+    #    (DOI metadata often has just main title without subtitle)
+    #    Require at least 8 chars to avoid false positives on very short titles
+    is_prefix = ref_norm.startswith(doi_norm) and len(doi_norm) >= 8
+
+    # 3. Partial ratio - good for when one string contains the other
+    partial_ratio = fuzz.partial_ratio(ref_norm, doi_norm)
+
+    # 4. Check if reference starts with DOI title (handles "FlowDroid: subtitle" vs "FlowDroid")
+    #    100% partial match means DOI title is fully contained in reference
+    is_contained_prefix = (
+        partial_ratio == 100 and
+        len(doi_norm) >= 8 and
+        ref_norm.startswith(doi_norm)
+    )
+
+    # 5. Handle short tool/project names like "ReCon: Subtitle" vs "ReCon"
+    #    If DOI title exactly matches the part before a colon in ref title, it's the tool name
+    is_tool_name_match = False
+    if len(doi_norm) >= 4 and partial_ratio == 100 and ':' in ref_title:
+        # Extract part before colon in reference title and normalize
+        ref_before_colon = ref_title.split(':')[0].strip()
+        ref_before_colon_norm = normalize_title(ref_before_colon)
+        # Check if DOI title matches the tool name part exactly
+        if ref_before_colon_norm == doi_norm:
+            is_tool_name_match = True
+
+    # Consider it a match if:
+    # - Full ratio >= 95% (nearly identical), OR
+    # - DOI title is a prefix of ref title (at least 8 chars), OR
+    # - DOI title is fully contained at the start of ref title, OR
+    # - Partial ratio >= 95% AND DOI title is reasonably long (>= 20 chars normalized), OR
+    # - DOI title matches the tool/project name before a colon (short names like "ReCon")
+    title_match = (
+        title_ratio >= 95 or
+        is_prefix or
+        is_contained_prefix or
+        (partial_ratio >= 95 and len(doi_norm) >= 20) or
+        is_tool_name_match
+    )
+
+    if not title_match:
+        return {
+            'status': 'title_mismatch',
+            'message': f'DOI points to different paper: "{doi_title[:60]}..."' if len(doi_title) > 60 else f'DOI points to different paper: "{doi_title}"',
+            'doi_title': doi_title,
+            'doi_authors': doi_authors
+        }
+
+    # Check author match
+    if ref_authors and doi_authors:
+        if validate_authors(ref_authors, doi_authors):
+            return {
+                'status': 'verified',
+                'message': 'DOI verified',
+                'doi_title': doi_title,
+                'doi_authors': doi_authors
+            }
+        else:
+            return {
+                'status': 'author_mismatch',
+                'message': 'DOI title matches but authors differ',
+                'doi_title': doi_title,
+                'doi_authors': doi_authors
+            }
+
+    # No authors to compare, but title matches
+    return {
+        'status': 'verified',
+        'message': 'DOI verified (title match)',
+        'doi_title': doi_title,
+        'doi_authors': doi_authors
+    }
+
+
 # Common compound-word suffixes that should keep the hyphen
 COMPOUND_SUFFIXES = {
     'centered', 'based', 'driven', 'aware', 'oriented', 'specific', 'related',
@@ -757,6 +953,9 @@ def extract_references_with_titles_and_authors(pdf_path, return_stats=False):
     previous_authors = []
 
     for ref_text in raw_refs:
+        # Extract DOI BEFORE fixing hyphenation (DOIs can contain hyphens split across lines)
+        doi = extract_doi(ref_text)
+
         # Fix hyphenation from PDF line breaks (preserves compound words like "human-centered")
         ref_text = fix_hyphenation(ref_text)
 
@@ -789,7 +988,7 @@ def extract_references_with_titles_and_authors(pdf_path, return_stats=False):
         if authors:
             previous_authors = authors
 
-        references.append((title, authors))
+        references.append((title, authors, doi))
 
     return (references, stats) if return_stats else references
 
@@ -1264,7 +1463,8 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     """Check references against databases with concurrent queries.
 
     Args:
-        refs: List of (title, authors) tuples
+        refs: List of (title, authors, doi) tuples (doi may be None)
+              Also accepts legacy (title, authors) tuples for backwards compatibility
         sleep_time: (unused, kept for API compatibility)
         openalex_key: Optional OpenAlex API key
         s2_api_key: Optional Semantic Scholar API key for higher rate limits
@@ -1276,7 +1476,7 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
 
     Returns:
         Tuple of (results, check_stats) where:
-        - results: List of result dicts with title, ref_authors, status, source, found_authors, error_type
+        - results: List of result dicts with title, ref_authors, status, source, found_authors, error_type, doi_info
         - check_stats: Dict with 'total_timeouts', 'retried_count', 'retry_successes'
     """
     import threading
@@ -1284,12 +1484,15 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     results = [None] * len(refs)  # Pre-allocate to maintain order
     # Track indices of "not found" results that had failed DBs for retry
     retry_candidates = []
+    # Track DOIs that got 429 errors for retry
+    doi_retry_candidates = []
+    doi_retry_lock = threading.Lock()
     # Track total timeout/failure count
     total_timeouts = 0
     timeouts_lock = threading.Lock()
     retry_lock = threading.Lock()
 
-    def check_single_ref(i, title, ref_authors):
+    def check_single_ref(i, title, ref_authors, doi=None):
         """Check a single reference and return result."""
         nonlocal total_timeouts
 
@@ -1300,6 +1503,37 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
                 'total': len(refs),
                 'title': title,
             })
+
+        # Validate DOI if present
+        doi_info = None
+        if doi:
+            logger.debug(f"  Validating DOI: {doi}")
+            doi_result = validate_doi(doi)
+
+            # Check if DOI got rate limited - track for retry
+            if not doi_result['valid'] and '429' in str(doi_result.get('error', '')):
+                with doi_retry_lock:
+                    doi_retry_candidates.append((i, doi, title, ref_authors))
+                logger.info(f"  DOI rate limited, will retry: {doi}")
+                # Mark as needing retry in doi_info
+                doi_info = {
+                    'doi': doi,
+                    'status': 'invalid',
+                    'message': 'DOI lookup rate limited (will retry)',
+                    'doi_title': None,
+                    'doi_authors': [],
+                    'needs_retry': True,
+                }
+            else:
+                doi_match = check_doi_match(doi_result, title, ref_authors)
+                doi_info = {
+                    'doi': doi,
+                    'status': doi_match['status'],
+                    'message': doi_match['message'],
+                    'doi_title': doi_match.get('doi_title'),
+                    'doi_authors': doi_match.get('doi_authors', []),
+                }
+                logger.debug(f"  DOI validation: {doi_match['status']} - {doi_match['message']}")
 
         # Query all databases concurrently
         result = query_all_databases_concurrent(
@@ -1320,7 +1554,16 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
             'paper_url': result.get('paper_url'),
             'error_type': result['error_type'],
             'failed_dbs': result.get('failed_dbs', []),
+            'doi_info': doi_info,
         }
+
+        # If DOI verified, use that as verification even if DB search failed
+        if doi_info and doi_info['status'] == 'verified' and result['status'] == 'not_found':
+            full_result['status'] = 'verified'
+            full_result['source'] = 'DOI'
+            full_result['error_type'] = None
+            logger.info(f"  -> VERIFIED via DOI (DB search found nothing)")
+
         results[i] = full_result
 
         # Track for retry if not found and had failures
@@ -1367,8 +1610,14 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     # Process references in parallel with bounded concurrency
     with ThreadPoolExecutor(max_workers=max_concurrent_refs) as executor:
         futures = []
-        for i, (title, ref_authors) in enumerate(refs):
-            future = executor.submit(check_single_ref, i, title, ref_authors)
+        for i, ref in enumerate(refs):
+            # Handle both (title, authors, doi) and legacy (title, authors) tuples
+            if len(ref) >= 3:
+                title, ref_authors, doi = ref[0], ref[1], ref[2]
+            else:
+                title, ref_authors = ref[0], ref[1]
+                doi = None
+            future = executor.submit(check_single_ref, i, title, ref_authors, doi)
             futures.append(future)
 
         # Wait for all to complete
@@ -1431,10 +1680,67 @@ def check_references(refs, sleep_time=1.0, openalex_key=None, s2_api_key=None, o
     if retry_candidates:
         logger.info(f"=== RETRY COMPLETE: {retry_successes}/{len(retry_candidates)} recovered ===")
 
+    # DOI retry pass for rate-limited DOIs
+    doi_retry_successes = 0
+    if doi_retry_candidates:
+        logger.info(f"=== DOI RETRY PASS: {len(doi_retry_candidates)} DOIs were rate limited ===")
+        if on_progress:
+            on_progress('doi_retry_pass', {
+                'count': len(doi_retry_candidates),
+            })
+
+        import time
+        for retry_num, (idx, doi, title, ref_authors) in enumerate(doi_retry_candidates, 1):
+            short_title = title[:50] + '...' if len(title) > 50 else title
+            logger.info(f"[DOI RETRY {retry_num}/{len(doi_retry_candidates)}] {short_title}")
+
+            if on_progress:
+                on_progress('checking', {
+                    'index': idx,
+                    'total': len(refs),
+                    'title': f"[RETRY DOI] {short_title}",
+                })
+
+            # Brief delay before retry
+            time.sleep(0.5)
+
+            # Retry DOI validation
+            doi_result = validate_doi(doi)
+            if doi_result['valid'] or '429' not in str(doi_result.get('error', '')):
+                # Either succeeded or got a different error - update the result
+                doi_match = check_doi_match(doi_result, title, ref_authors)
+                new_doi_info = {
+                    'doi': doi,
+                    'status': doi_match['status'],
+                    'message': doi_match['message'],
+                    'doi_title': doi_match.get('doi_title'),
+                    'doi_authors': doi_match.get('doi_authors', []),
+                }
+                results[idx]['doi_info'] = new_doi_info
+
+                # If DOI now verified and DB search failed, update status
+                if doi_match['status'] == 'verified' and results[idx]['status'] == 'not_found':
+                    results[idx]['status'] = 'verified'
+                    results[idx]['source'] = 'DOI'
+                    results[idx]['error_type'] = None
+
+                if doi_result['valid']:
+                    doi_retry_successes += 1
+                    logger.info(f"  -> DOI RECOVERED: {doi_match['status']}")
+                else:
+                    logger.info(f"  -> DOI still invalid: {doi_result.get('error', 'unknown error')}")
+            else:
+                logger.info(f"  -> DOI still rate limited")
+
+    if doi_retry_candidates:
+        logger.info(f"=== DOI RETRY COMPLETE: {doi_retry_successes}/{len(doi_retry_candidates)} recovered ===")
+
     check_stats = {
         'total_timeouts': total_timeouts,
         'retried_count': len(retry_candidates),
         'retry_successes': retry_successes,
+        'doi_retried_count': len(doi_retry_candidates),
+        'doi_retry_successes': doi_retry_successes,
     }
     return results, check_stats
 
@@ -1511,6 +1817,12 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offl
     failed = sum(1 for r in results if r['status'] == 'not_found')
     mismatched = sum(1 for r in results if r['status'] == 'author_mismatch')
 
+    # Count DOI stats
+    dois_found = sum(1 for r in results if r.get('doi_info'))
+    dois_valid = sum(1 for r in results if r.get('doi_info') and r['doi_info']['status'] == 'verified')
+    dois_invalid = sum(1 for r in results if r.get('doi_info') and r['doi_info']['status'] == 'invalid')
+    dois_mismatch = sum(1 for r in results if r.get('doi_info') and r['doi_info']['status'] in ('title_mismatch', 'author_mismatch'))
+
     # Print detailed hallucination info
     for result in results:
         if result['status'] == 'not_found':
@@ -1522,6 +1834,32 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offl
                 ref_authors=result['ref_authors'],
                 found_authors=result['found_authors']
             )
+
+    # Print DOI issues as potential hallucinations
+    doi_issues = [r for r in results if r.get('doi_info') and r['doi_info']['status'] in ('invalid', 'title_mismatch', 'author_mismatch')]
+    if doi_issues:
+        print()
+        print(f"{Colors.RED}{Colors.BOLD}{'='*60}{Colors.RESET}")
+        print(f"{Colors.RED}{Colors.BOLD}DOI ISSUES - POTENTIAL HALLUCINATIONS{Colors.RESET}")
+        print(f"{Colors.RED}{Colors.BOLD}{'='*60}{Colors.RESET}")
+        for result in doi_issues:
+            doi_info = result['doi_info']
+            print()
+            print(f"{Colors.BOLD}Reference:{Colors.RESET} {result['title'][:70]}{'...' if len(result['title']) > 70 else ''}")
+            print(f"{Colors.BOLD}DOI:{Colors.RESET} {doi_info['doi']}")
+            if doi_info['status'] == 'invalid':
+                print(f"{Colors.RED}Issue:{Colors.RESET} DOI does not resolve - {doi_info['message']}")
+            elif doi_info['status'] == 'title_mismatch':
+                print(f"{Colors.RED}Issue:{Colors.RESET} DOI points to a different paper")
+                print(f"{Colors.BOLD}DOI resolves to:{Colors.RESET} {doi_info['doi_title'][:70]}{'...' if doi_info.get('doi_title') and len(doi_info['doi_title']) > 70 else ''}")
+            elif doi_info['status'] == 'author_mismatch':
+                print(f"{Colors.RED}Issue:{Colors.RESET} DOI title matches but authors differ")
+            # Show database verification status
+            if result['status'] == 'verified':
+                print(f"{Colors.DIM}Note: Paper found in {result['source']} but DOI is problematic{Colors.RESET}")
+            elif result['status'] == 'not_found':
+                print(f"{Colors.RED}Note: Paper also not found in any database{Colors.RESET}")
+        print()
 
     # Print summary
     print()
@@ -1537,12 +1875,28 @@ def main(pdf_path, sleep_time=1.0, openalex_key=None, s2_api_key=None, dblp_offl
         print(f"  {Colors.DIM}Title-only (no authors extracted): {skip_stats['skipped_no_authors']}{Colors.RESET}")
     if check_stats['total_timeouts'] > 0:
         print(f"  {Colors.DIM}DB timeouts/errors: {check_stats['total_timeouts']} (retried {check_stats['retried_count']}, {check_stats['retry_successes']} recovered){Colors.RESET}")
+    if check_stats.get('doi_retried_count', 0) > 0:
+        print(f"  {Colors.DIM}DOI rate limits: {check_stats['doi_retried_count']} (retried, {check_stats['doi_retry_successes']} recovered){Colors.RESET}")
     print()
     print(f"  {Colors.GREEN}Verified:{Colors.RESET} {found}")
     if mismatched > 0:
         print(f"  {Colors.YELLOW}Author mismatches:{Colors.RESET} {mismatched}")
     if failed > 0:
         print(f"  {Colors.RED}Not found (potential hallucinations):{Colors.RESET} {failed}")
+
+    # DOI issues count as potential hallucinations
+    doi_issues_count = dois_invalid + dois_mismatch
+    if doi_issues_count > 0:
+        print(f"  {Colors.RED}DOI issues (potential hallucinations):{Colors.RESET} {doi_issues_count}")
+        if dois_invalid > 0:
+            print(f"    {Colors.DIM}- Invalid/unresolved DOIs: {dois_invalid}{Colors.RESET}")
+        if dois_mismatch > 0:
+            print(f"    {Colors.DIM}- DOI mismatches: {dois_mismatch}{Colors.RESET}")
+
+    # Show DOI stats if any DOIs were found
+    if dois_found > 0 and dois_valid > 0:
+        print()
+        print(f"  {Colors.DIM}DOIs validated: {dois_valid}/{dois_found}{Colors.RESET}")
     print()
 
 if __name__ == "__main__":

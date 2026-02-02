@@ -453,6 +453,7 @@
         .stat-verified .stat-value { color: #16a34a; }
         .stat-mismatch .stat-value { color: #ca8a04; }
         .stat-notfound .stat-value { color: #dc2626; }
+        .stat-doi-issue .stat-value { color: #9333ea; }
         .stat-skipped .stat-value { color: #6b7280; }
         .skipped-details {
             color: var(--text-secondary);
@@ -735,6 +736,46 @@
         a.verified-source:hover {
             text-decoration: underline;
         }
+        .doi-badge {
+            background: #dbeafe;
+            color: #1d4ed8;
+            font-size: 0.75rem;
+            padding: 0.125rem 0.375rem;
+            border-radius: 3px;
+            text-decoration: none;
+            margin-left: 0.5rem;
+            white-space: nowrap;
+        }
+        .doi-badge:hover {
+            background: #bfdbfe;
+        }
+        .dark .doi-badge {
+            background: #1e3a5f;
+            color: #93c5fd;
+        }
+        .dark .doi-badge:hover {
+            background: #1e4976;
+        }
+        .doi-issue {
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+        .doi-issue-invalid {
+            background: #fee2e2;
+            border-color: #ef4444;
+        }
+        .dark .doi-issue {
+            background: #451a03;
+            border-color: #d97706;
+        }
+        .dark .doi-issue-invalid {
+            background: #450a0a;
+            border-color: #dc2626;
+        }
         /* Multi-file archive styles */
         .file-section {
             background: white;
@@ -942,6 +983,10 @@
                     <div class="stat-value" id="notfoundCount">0</div>
                     <div class="stat-label">Not Found</div>
                 </div>
+                <div class="stat stat-doi-issue" id="doiIssueStat" style="display: none;">
+                    <div class="stat-value" id="doiIssueCount">0</div>
+                    <div class="stat-label">DOI Issues</div>
+                </div>
                 <div class="stat stat-skipped">
                     <div class="stat-value" id="skippedCount">0</div>
                     <div class="stat-label">Skipped</div>
@@ -968,6 +1013,14 @@
         <div class="hallucinations" id="hallucinations">
             <h2>Potential Hallucinations</h2>
             <div id="hallucinationList"></div>
+        </div>
+
+        <div class="hallucinations doi-issues-section" id="doiIssuesSection" style="display: none;">
+            <h2 style="color: #9333ea;">DOI Issues</h2>
+            <p class="doi-issues-description" style="color: var(--text-secondary); margin-bottom: 1rem; font-size: 0.9rem;">
+                These references have problematic DOIs - the DOI doesn't resolve, or points to a different paper.
+            </p>
+            <div id="doiIssuesList"></div>
         </div>
     </div>
     </div><!-- end main-content -->
@@ -1531,6 +1584,26 @@
                 `;
             }
 
+            // Show DOI issues if present
+            let doiHtml = '';
+            if (ref.doi_info && ref.doi_info.status !== 'verified') {
+                const doiClass = ref.doi_info.status === 'invalid' ? 'doi-issue doi-issue-invalid' : 'doi-issue';
+                let doiMessage = '';
+                if (ref.doi_info.status === 'invalid') {
+                    doiMessage = `❌ Invalid DOI: ${escapeHtml(ref.doi_info.message)}`;
+                } else if (ref.doi_info.status === 'title_mismatch') {
+                    doiMessage = `⚠️ DOI mismatch: Points to "${escapeHtml(ref.doi_info.doi_title || 'different paper')}"`;
+                } else if (ref.doi_info.status === 'author_mismatch') {
+                    doiMessage = `⚠️ DOI author mismatch: Title matches but authors differ`;
+                }
+                doiHtml = `
+                    <div class="${doiClass}">
+                        <strong>DOI:</strong> <a href="https://doi.org/${escapeHtml(ref.doi_info.doi)}" target="_blank">${escapeHtml(ref.doi_info.doi)}</a><br>
+                        ${doiMessage}
+                    </div>
+                `;
+            }
+
             // Show which databases timed out
             let timeoutHtml = '';
             if (ref.failed_dbs && ref.failed_dbs.length > 0) {
@@ -1552,6 +1625,7 @@
             div.innerHTML = `
                 <div class="reference-title">${escapeHtml(ref.title)}</div>
                 <div class="reference-status ${statusClass}">${statusText}</div>
+                ${doiHtml}
                 ${timeoutHtml}
                 ${authorHtml}
                 <div class="reference-actions">
@@ -1593,19 +1667,39 @@
                 ? fileSection.querySelector('.file-content')
                 : document.getElementById('hallucinationList');
 
-            // Find or create the verified section within the appropriate container
-            let verifiedSection = container.querySelector('.verified-section');
-            if (!verifiedSection) {
-                verifiedSection = document.createElement('div');
-                verifiedSection.className = 'verified-section';
-                verifiedSection.innerHTML = `
-                    <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
-                        <span class="verified-count-text">Verified References (0)</span>
-                        <span class="verified-toggle">▼</span>
-                    </div>
-                    <div class="verified-list"></div>
-                `;
-                container.appendChild(verifiedSection);
+            // Find or create the verified section
+            let verifiedSection;
+            if (isArchiveMode) {
+                // For archive mode, add verified section inside the file content
+                verifiedSection = container.querySelector('.verified-section');
+                if (!verifiedSection) {
+                    verifiedSection = document.createElement('div');
+                    verifiedSection.className = 'verified-section';
+                    verifiedSection.innerHTML = `
+                        <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
+                            <span class="verified-count-text">Verified References (0)</span>
+                            <span class="verified-toggle">▼</span>
+                        </div>
+                        <div class="verified-list"></div>
+                    `;
+                    container.appendChild(verifiedSection);
+                }
+            } else {
+                // For single file mode, place verified section after DOI issues section
+                const doiIssuesSection = document.getElementById('doiIssuesSection');
+                verifiedSection = doiIssuesSection.parentNode.querySelector('.verified-section');
+                if (!verifiedSection) {
+                    verifiedSection = document.createElement('div');
+                    verifiedSection.className = 'verified-section';
+                    verifiedSection.innerHTML = `
+                        <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
+                            <span class="verified-count-text">Verified References (0)</span>
+                            <span class="verified-toggle">▼</span>
+                        </div>
+                        <div class="verified-list"></div>
+                    `;
+                    doiIssuesSection.parentNode.insertBefore(verifiedSection, doiIssuesSection.nextSibling);
+                }
             }
 
             // Add to verified list
@@ -1685,6 +1779,72 @@
                 noHallucinations.textContent = 'All references verified!';
                 container.insertBefore(noHallucinations, verifiedSection);
             }
+        }
+
+        function markDoiIssueSafe(button, title) {
+            const referenceDiv = button.closest('.reference');
+            if (!referenceDiv) return;
+
+            // Get the DOI issues section and list
+            const doiIssuesSection = document.getElementById('doiIssuesSection');
+            const doiIssuesList = document.getElementById('doiIssuesList');
+
+            // Find or create verified section (after DOI issues section)
+            let verifiedSection = doiIssuesSection.parentNode.querySelector('.verified-section');
+            if (!verifiedSection) {
+                verifiedSection = document.createElement('div');
+                verifiedSection.className = 'verified-section';
+                verifiedSection.innerHTML = `
+                    <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
+                        <span class="verified-count-text">Verified References (0)</span>
+                        <span class="verified-toggle">▼</span>
+                    </div>
+                    <div class="verified-list"></div>
+                `;
+                doiIssuesSection.parentNode.insertBefore(verifiedSection, doiIssuesSection.nextSibling);
+            }
+
+            // Add to verified list
+            const verifiedList = verifiedSection.querySelector('.verified-list');
+            const item = document.createElement('div');
+            item.className = 'verified-item';
+            item.innerHTML = `
+                <span class="verified-title">${escapeHtml(title)}</span>
+                <span class="verified-source" style="color: #16a34a;">Marked as safe</span>
+            `;
+            verifiedList.appendChild(item);
+
+            // Update verified count in the section header
+            const verifiedCount = verifiedList.querySelectorAll('.verified-item').length;
+            const countText = verifiedSection.querySelector('.verified-count-text');
+            if (countText) {
+                countText.textContent = `Verified References (${verifiedCount})`;
+            }
+
+            // Update DOI issues stat
+            const doiIssueCountEl = document.getElementById('doiIssueCount');
+            if (doiIssueCountEl) {
+                const currentCount = parseInt(doiIssueCountEl.textContent) || 0;
+                doiIssueCountEl.textContent = Math.max(0, currentCount - 1);
+            }
+
+            // Update verified count stat
+            const verifiedCountEl = document.getElementById('verifiedCount');
+            if (verifiedCountEl) {
+                verifiedCountEl.textContent = parseInt(verifiedCountEl.textContent) + 1;
+            }
+
+            // Remove from DOI issues list
+            referenceDiv.remove();
+
+            // Hide DOI issues section if empty
+            const remainingDoiIssues = doiIssuesList.querySelectorAll('.reference').length;
+            if (remainingDoiIssues === 0) {
+                doiIssuesSection.style.display = 'none';
+            }
+
+            // Update problematic percentage
+            updateProblematicPercent();
         }
 
         function updateFileProblematicPercent(fileSection) {
@@ -1812,18 +1972,38 @@
                 : document.getElementById('hallucinationList');
 
             // Find or create verified section
-            let verifiedSection = container.querySelector('.verified-section');
-            if (!verifiedSection) {
-                verifiedSection = document.createElement('div');
-                verifiedSection.className = 'verified-section';
-                verifiedSection.innerHTML = `
-                    <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
-                        <span class="verified-count-text">Verified References (0)</span>
-                        <span class="verified-toggle">▼</span>
-                    </div>
-                    <div class="verified-list"></div>
-                `;
-                container.appendChild(verifiedSection);
+            let verifiedSection;
+            if (isArchiveMode) {
+                // For archive mode, add verified section inside the file content
+                verifiedSection = container.querySelector('.verified-section');
+                if (!verifiedSection) {
+                    verifiedSection = document.createElement('div');
+                    verifiedSection.className = 'verified-section';
+                    verifiedSection.innerHTML = `
+                        <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
+                            <span class="verified-count-text">Verified References (0)</span>
+                            <span class="verified-toggle">▼</span>
+                        </div>
+                        <div class="verified-list"></div>
+                    `;
+                    container.appendChild(verifiedSection);
+                }
+            } else {
+                // For single file mode, place verified section after DOI issues section
+                const doiIssuesSection = document.getElementById('doiIssuesSection');
+                verifiedSection = doiIssuesSection.parentNode.querySelector('.verified-section');
+                if (!verifiedSection) {
+                    verifiedSection = document.createElement('div');
+                    verifiedSection.className = 'verified-section';
+                    verifiedSection.innerHTML = `
+                        <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
+                            <span class="verified-count-text">Verified References (0)</span>
+                            <span class="verified-toggle">▼</span>
+                        </div>
+                        <div class="verified-list"></div>
+                    `;
+                    doiIssuesSection.parentNode.insertBefore(verifiedSection, doiIssuesSection.nextSibling);
+                }
             }
 
             // Add to verified list
@@ -2156,6 +2336,22 @@ https://github.com/idramalab/hallucinator
             }
             skippedDetails.textContent = detailParts.join(' | ');
 
+            // Update DOI issues stat
+            const doisFound = data.results.filter(r => r.doi_info).length;
+            const doisValid = data.results.filter(r => r.doi_info && r.doi_info.status === 'verified').length;
+            const doisInvalid = data.results.filter(r => r.doi_info && r.doi_info.status === 'invalid').length;
+            const doisMismatch = data.results.filter(r => r.doi_info && (r.doi_info.status === 'title_mismatch' || r.doi_info.status === 'author_mismatch')).length;
+            const doiIssuesTotal = doisInvalid + doisMismatch;
+
+            const doiIssueStat = document.getElementById('doiIssueStat');
+            const doiIssueCount = document.getElementById('doiIssueCount');
+            if (doiIssuesTotal > 0) {
+                doiIssueCount.textContent = doiIssuesTotal;
+                doiIssueStat.style.display = '';
+            } else {
+                doiIssueStat.style.display = 'none';
+            }
+
             // Show timeout warning separately if there were timeouts
             let timeoutWarning = document.getElementById('timeoutWarning');
             if (!timeoutWarning) {
@@ -2171,9 +2367,9 @@ https://github.com/idramalab/hallucinator
                 timeoutWarning.style.display = 'none';
             }
 
-            // Update problematic percentage
+            // Update problematic percentage (include DOI issues)
             const problematicPercent = document.getElementById('problematicPercent');
-            const problematic = data.summary.not_found + data.summary.mismatched;
+            const problematic = data.summary.not_found + data.summary.mismatched + doiIssuesTotal;
             if (data.summary.total > 0) {
                 const percent = ((problematic / data.summary.total) * 100).toFixed(1);
                 if (problematic === 0) {
@@ -2207,13 +2403,73 @@ https://github.com/idramalab/hallucinator
                 updateFindInPdfButtons();
             }
 
-            // Show verified references in collapsible section
+            // Render DOI issues section
+            const doiIssues = data.results.filter(r => r.doi_info && r.doi_info.status !== 'verified');
+            const doiIssuesSection = document.getElementById('doiIssuesSection');
+            const doiIssuesList = document.getElementById('doiIssuesList');
+
+            if (doiIssues.length > 0) {
+                doiIssuesSection.style.display = 'block';
+                doiIssuesList.innerHTML = '';
+
+                doiIssues.forEach(ref => {
+                    const div = document.createElement('div');
+                    div.className = 'reference doi-issue-reference';
+
+                    const doiInfo = ref.doi_info;
+                    let issueType = '';
+                    let issueDetail = '';
+
+                    if (doiInfo.status === 'invalid') {
+                        issueType = 'DOI does not resolve';
+                        issueDetail = doiInfo.message || 'Invalid or non-existent DOI';
+                    } else if (doiInfo.status === 'title_mismatch') {
+                        issueType = 'DOI points to different paper';
+                        issueDetail = `Resolves to: "${escapeHtml(doiInfo.doi_title || 'Unknown')}"`;
+                    } else if (doiInfo.status === 'author_mismatch') {
+                        issueType = 'DOI authors do not match';
+                        issueDetail = 'Title matches but authors differ';
+                    }
+
+                    const dbStatus = ref.status === 'verified'
+                        ? `<span style="color: #16a34a;">✓ Found in ${escapeHtml(ref.source)}</span>`
+                        : ref.status === 'not_found'
+                            ? `<span style="color: #dc2626;">✗ Not found in databases</span>`
+                            : `<span style="color: #ca8a04;">⚠ Author mismatch in ${escapeHtml(ref.source)}</span>`;
+
+                    div.innerHTML = `
+                        <div class="reference-title">${escapeHtml(ref.title)}</div>
+                        <div class="doi-issue" style="margin-top: 0.5rem;">
+                            <strong>DOI:</strong> <a href="https://doi.org/${escapeHtml(doiInfo.doi)}" target="_blank">${escapeHtml(doiInfo.doi)}</a><br>
+                            <span style="color: #dc2626;">❌ ${issueType}</span><br>
+                            <span style="color: var(--text-secondary);">${issueDetail}</span>
+                        </div>
+                        <div style="margin-top: 0.5rem; font-size: 0.9rem;">
+                            Database status: ${dbStatus}
+                        </div>
+                        <div class="reference-actions">
+                            <a href="${createScholarLink(ref.title)}" target="_blank" class="scholar-link">
+                                Search on Google Scholar &rarr;
+                            </a>
+                            <button class="mark-safe-btn" onclick="markDoiIssueSafe(this, '${escapeHtml(ref.title).replace(/'/g, "\\'")}')">
+                                ✓ Mark as Safe
+                            </button>
+                        </div>
+                    `;
+
+                    doiIssuesList.appendChild(div);
+                });
+            } else {
+                doiIssuesSection.style.display = 'none';
+            }
+
+            // Show verified references in collapsible section (after DOI issues)
             if (verified.length > 0) {
                 const verifiedSection = document.createElement('div');
                 verifiedSection.className = 'verified-section';
                 verifiedSection.innerHTML = `
                     <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
-                        <span>Verified References (${verified.length})</span>
+                        <span class="verified-count-text">Verified References (${verified.length})</span>
                         <span class="verified-toggle">▼</span>
                     </div>
                     <div class="verified-list"></div>
@@ -2225,13 +2481,18 @@ https://github.com/idramalab/hallucinator
                     const sourceLink = ref.paper_url
                         ? `<a href="${escapeHtml(ref.paper_url)}" target="_blank" class="verified-source">${escapeHtml(ref.source || 'Unknown')} ↗</a>`
                         : `<span class="verified-source">${escapeHtml(ref.source || 'Unknown')}</span>`;
+                    const doiBadge = ref.doi_info && ref.doi_info.doi
+                        ? `<a href="https://doi.org/${escapeHtml(ref.doi_info.doi)}" target="_blank" class="doi-badge" title="DOI: ${escapeHtml(ref.doi_info.doi)}">DOI ↗</a>`
+                        : '';
                     item.innerHTML = `
                         <span class="verified-title">${escapeHtml(ref.title)}</span>
                         ${sourceLink}
+                        ${doiBadge}
                     `;
                     verifiedList.appendChild(item);
                 });
-                list.appendChild(verifiedSection);
+                // Insert after DOI issues section in the DOM
+                doiIssuesSection.parentNode.insertBefore(verifiedSection, doiIssuesSection.nextSibling);
             }
         }
 
@@ -2406,13 +2667,56 @@ https://github.com/idramalab/hallucinator
                 });
             }
 
-            // Add verified references section
+            // Add DOI issues section
+            const doiIssues = file.results.filter(r => r.doi_info && r.doi_info.status !== 'verified');
+            if (doiIssues.length > 0) {
+                html += `
+                    <div class="doi-issues-section" style="margin-top: 1.5rem;">
+                        <h3 style="color: #9333ea; margin-bottom: 0.75rem;">DOI Issues (${doiIssues.length})</h3>
+                        ${doiIssues.map(ref => {
+                            const doiInfo = ref.doi_info;
+                            let issueType = '';
+                            let issueDetail = '';
+                            if (doiInfo.status === 'invalid') {
+                                issueType = 'DOI does not resolve';
+                                issueDetail = doiInfo.message || 'Invalid or non-existent DOI';
+                            } else if (doiInfo.status === 'title_mismatch') {
+                                issueType = 'DOI points to different paper';
+                                issueDetail = 'Resolves to: "' + escapeHtml(doiInfo.doi_title || 'Unknown') + '"';
+                            } else if (doiInfo.status === 'author_mismatch') {
+                                issueType = 'DOI authors do not match';
+                                issueDetail = 'Title matches but authors differ';
+                            }
+                            const dbStatus = ref.status === 'verified'
+                                ? '<span style="color: #16a34a;">✓ Found in ' + escapeHtml(ref.source) + '</span>'
+                                : ref.status === 'not_found'
+                                    ? '<span style="color: #dc2626;">✗ Not found in databases</span>'
+                                    : '<span style="color: #ca8a04;">⚠ Author mismatch in ' + escapeHtml(ref.source) + '</span>';
+                            return `
+                                <div class="reference doi-issue-reference" style="margin-bottom: 1rem; padding: 1rem; border: 1px solid #9333ea33; border-radius: 0.5rem; background: var(--card-background);">
+                                    <div class="reference-title" style="font-weight: 600; margin-bottom: 0.5rem;">${escapeHtml(ref.title)}</div>
+                                    <div class="doi-issue" style="margin-top: 0.5rem;">
+                                        <strong>DOI:</strong> <a href="https://doi.org/${escapeHtml(doiInfo.doi)}" target="_blank">${escapeHtml(doiInfo.doi)}</a><br>
+                                        <span style="color: #dc2626;">❌ ${issueType}</span><br>
+                                        <span style="color: var(--text-secondary);">${issueDetail}</span>
+                                    </div>
+                                    <div style="margin-top: 0.5rem; font-size: 0.9rem;">
+                                        Database status: ${dbStatus}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+            }
+
+            // Add verified references section (after DOI issues)
             const verified = file.results.filter(r => r.status === 'verified');
             if (verified.length > 0) {
                 html += `
                     <div class="verified-section">
                         <div class="verified-header" onclick="this.parentElement.classList.toggle('expanded')">
-                            <span>Verified References (${verified.length})</span>
+                            <span class="verified-count-text">Verified References (${verified.length})</span>
                             <span class="verified-toggle">▼</span>
                         </div>
                         <div class="verified-list">
