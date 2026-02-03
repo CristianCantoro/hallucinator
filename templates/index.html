@@ -1964,17 +1964,35 @@
 
         function updateProblematicPercent() {
             const problematicPercent = document.getElementById('problematicPercent');
-            const verifiedCountEl = document.getElementById('verifiedCount');
-            const mismatchCountEl = document.getElementById('mismatchCount');
-            const notfoundCountEl = document.getElementById('notfoundCount');
             const totalCountEl = document.getElementById('totalCount');
 
             if (!problematicPercent || !totalCountEl) return;
 
             const total = parseInt(totalCountEl.textContent) || 0;
-            const notFound = parseInt(notfoundCountEl?.textContent) || 0;
-            const mismatched = parseInt(mismatchCountEl?.textContent) || 0;
-            const problematic = notFound + mismatched;
+
+            // Count unique problematic references by title (no double-counting)
+            // A reference may appear in multiple sections (e.g., hallucination list AND DOI issues)
+            const problematicTitles = new Set();
+
+            // Collect titles from all problem sections
+            document.querySelectorAll('#hallucinationList .reference').forEach(ref => {
+                const title = ref.querySelector('h3')?.textContent?.trim();
+                if (title) problematicTitles.add(title);
+            });
+            document.querySelectorAll('#doiIssuesList .reference').forEach(ref => {
+                const title = ref.querySelector('h3')?.textContent?.trim();
+                if (title) problematicTitles.add(title);
+            });
+            document.querySelectorAll('#arxivIssuesList .reference').forEach(ref => {
+                const title = ref.querySelector('h3')?.textContent?.trim();
+                if (title) problematicTitles.add(title);
+            });
+            document.querySelectorAll('#retractedList .reference').forEach(ref => {
+                const title = ref.querySelector('h3')?.textContent?.trim();
+                if (title) problematicTitles.add(title);
+            });
+
+            const problematic = problematicTitles.size;
 
             if (total > 0) {
                 const percent = ((problematic / total) * 100).toFixed(1);
@@ -2486,9 +2504,17 @@ https://github.com/idramalab/hallucinator
                 timeoutWarning.style.display = 'none';
             }
 
-            // Update problematic percentage (include DOI, arXiv issues, and retracted papers)
+            // Update problematic percentage - count unique problematic references (no double-counting)
+            // A reference is problematic if it has ANY issue (not found, mismatch, DOI issue, arXiv issue, or retracted)
             const problematicPercent = document.getElementById('problematicPercent');
-            const problematic = data.summary.not_found + data.summary.mismatched + doiIssuesTotal + arxivIssuesTotal + retractedPapers.length;
+            const problematicRefs = data.results.filter(r =>
+                r.status === 'not_found' ||
+                r.status === 'author_mismatch' ||
+                (r.doi_info && r.doi_info.status !== 'verified') ||
+                (r.arxiv_info && r.arxiv_info.status !== 'verified') ||
+                (r.retraction_info && r.retraction_info.retracted)
+            ).length;
+            const problematic = problematicRefs;
             if (data.summary.total > 0) {
                 const percent = ((problematic / data.summary.total) * 100).toFixed(1);
                 if (problematic === 0) {
@@ -2788,7 +2814,15 @@ https://github.com/idramalab/hallucinator
             // Add aggregate header
             const header = document.createElement('div');
             header.className = 'multi-file-header';
-            const aggProblematic = data.summary.not_found + data.summary.mismatched;
+            // Count unique problematic references across all files (no double-counting)
+            // Note: allResults was already populated earlier in this function
+            const aggProblematic = allResults.filter(r =>
+                r.status === 'not_found' ||
+                r.status === 'author_mismatch' ||
+                (r.doi_info && r.doi_info.status !== 'verified') ||
+                (r.arxiv_info && r.arxiv_info.status !== 'verified') ||
+                (r.retraction_info && r.retraction_info.retracted)
+            ).length;
             const aggPercent = data.summary.total > 0 ? ((aggProblematic / data.summary.total) * 100).toFixed(1) : 0;
             const aggPercentClass = aggProblematic === 0 ? 'problematic-percent clean' : 'problematic-percent';
             const aggPercentText = aggProblematic === 0
@@ -2882,7 +2916,14 @@ https://github.com/idramalab/hallucinator
             }
 
             const hallucinations = file.results.filter(r => r.status !== 'verified');
-            const fileProblematic = file.summary.not_found + file.summary.mismatched;
+            // Count unique problematic references (no double-counting)
+            const fileProblematic = file.results.filter(r =>
+                r.status === 'not_found' ||
+                r.status === 'author_mismatch' ||
+                (r.doi_info && r.doi_info.status !== 'verified') ||
+                (r.arxiv_info && r.arxiv_info.status !== 'verified') ||
+                (r.retraction_info && r.retraction_info.retracted)
+            ).length;
             const filePercent = file.summary.total > 0 ? ((fileProblematic / file.summary.total) * 100).toFixed(1) : 0;
             const filePercentClass = fileProblematic === 0 ? 'problematic-percent clean' : 'problematic-percent';
             const filePercentText = fileProblematic === 0

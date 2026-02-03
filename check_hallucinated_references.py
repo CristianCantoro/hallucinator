@@ -813,7 +813,8 @@ def segment_references(ref_text):
 
     # Try numbered list style: 1., 2., etc.
     # Validate that numbers are sequential starting from 1 (not years like 2019. or page numbers)
-    numbered_pattern = r'\n\s*(\d+)\.\s+'
+    # Use (?:^|\n) to also match at start of string (reference 1 has no preceding newline)
+    numbered_pattern = r'(?:^|\n)\s*(\d+)\.\s+'
     numbered_matches = list(re.finditer(numbered_pattern, ref_text))
 
     if len(numbered_matches) >= 3:
@@ -1209,6 +1210,61 @@ def extract_title_from_reference(ref_text):
             # No subtitle - just use quoted part if long enough
             if len(quoted_part.split()) >= 3:
                 return quoted_part, True
+
+    # === Format 1b: LNCS/Springer - "Authors, I.: Title. In: Venue" ===
+    # Pattern: Authors end with initial + colon, then title
+    # Example: "Allix, K., Bissyandé, T.F.: Androzoo: Collecting millions. In: Proceedings"
+    # The colon after author initials marks the start of the title
+    # Match: comma/space + Initial(s) + colon (not just any word + colon)
+    lncs_match = re.search(r'[,\s][A-Z]\.(?:[-–][A-Z]\.)?\s*:\s*(.+)', ref_text)
+    if lncs_match:
+        after_colon = lncs_match.group(1).strip()
+        # Find where title ends - at ". In:" or ". In " or journal patterns or (Year)
+        title_end_patterns = [
+            r'\.\s*[Ii]n:\s+',           # ". In: " (LNCS uses colon)
+            r'\.\s*[Ii]n\s+[A-Z]',       # ". In Proceedings"
+            r'\.\s*(?:Proceedings|IEEE|ACM|USENIX|NDSS|arXiv)',
+            r'\.\s*[A-Z][a-zA-Z\s]+(?:Access|Journal|Review|Transactions)',  # Journal name
+            r'\.\s*https?://',           # URL follows title
+            r'\.\s*pp?\.\s*\d+',         # Page numbers
+            r'\s+\((?:19|20)\d{2}\)\s*[,.]?\s*(?:https?://|$)',  # (Year) followed by URL or end
+            r'\s+\((?:19|20)\d{2}\)\s*,',  # (Year) followed by comma
+        ]
+        title_end = len(after_colon)
+        for pattern in title_end_patterns:
+            m = re.search(pattern, after_colon)
+            if m:
+                title_end = min(title_end, m.start())
+
+        title = after_colon[:title_end].strip()
+        title = re.sub(r'\.\s*$', '', title)
+        if len(title.split()) >= 3:
+            return title, False
+
+    # === Format 1c: Organization/Documentation - "Organization: Title (Year), URL" ===
+    # Pattern: Organization name at START followed by colon, then title
+    # Example: "Android Developer: Define custom permissions (2024), https://..."
+    # Only match at start of reference to avoid matching mid-title colons
+    org_match = re.match(r'^([A-Z][a-zA-Z\s]+):\s*(.+)', ref_text)
+    if org_match:
+        after_colon = org_match.group(2).strip()
+        # Find where title ends - at (Year) followed by URL or comma
+        title_end_patterns = [
+            r'\s+\((?:19|20)\d{2}\)\s*[,.]?\s*(?:https?://|$)',  # (Year) followed by URL or end
+            r'\s+\((?:19|20)\d{2}\)\s*,',  # (Year) followed by comma
+            r'\.\s*https?://',           # URL follows title
+        ]
+        title_end = len(after_colon)
+        for pattern in title_end_patterns:
+            m = re.search(pattern, after_colon)
+            if m:
+                title_end = min(title_end, m.start())
+
+        title = after_colon[:title_end].strip()
+        title = re.sub(r'\.\s*$', '', title)
+        # Allow 2-word titles for this format (documentation titles can be short)
+        if len(title.split()) >= 2:
+            return title, False
 
     # === Format 2a: Springer/Nature - "Authors (Year) Title. Journal/Venue" ===
     # Pattern: "Surname I, ... (YYYY) Title text. Journal Name Vol(Issue):Pages"
@@ -2091,19 +2147,58 @@ def validate_authors(ref_authors, found_authors):
         if ',' in name:
             surname = name.split(',')[0].strip()
             return surname.lower()
-        # Standard format: surname is last word
+        # Standard format: extract surname (may be multi-word like "Van Bavel")
         parts = name.split()
         if not parts:
             return ""
-        return parts[-1].lower()
+        return get_surname_from_parts(parts).lower()
 
-    # Check if PDF-extracted authors are last-name-only (single words)
-    ref_authors_are_last_name_only = all(len(a.split()) == 1 for a in ref_authors if a.strip())
+    def has_first_name_or_initial(name):
+        """Check if a name contains a first name or initial (not just a surname)."""
+        name = name.strip()
+        if not name:
+            return False
+        # "Surname, Initial" format has a first name/initial
+        if ',' in name:
+            parts = name.split(',')
+            return len(parts) > 1 and parts[1].strip()
+        parts = name.split()
+        if len(parts) == 1:
+            # Single word - could be just a surname
+            return False
+        # Check if any part looks like an initial (single letter, possibly with period)
+        for part in parts[:-1]:  # Exclude last part (likely surname)
+            if len(part.rstrip('.')) == 1:
+                return True  # Found an initial
+        # Check if first part looks like a first name (capitalized, 2+ chars, not a surname prefix)
+        first = parts[0].rstrip('.')
+        if len(first) >= 2 and first[0].isupper() and first.lower() not in SURNAME_PREFIXES:
+            # Could be a first name like "John" or a surname prefix like "Van"
+            # If second part is also capitalized and not a prefix, first is likely a first name
+            if len(parts) >= 2:
+                second = parts[1].rstrip('.')
+                if len(second) >= 2 and second[0].isupper():
+                    return True  # Likely "FirstName LastName"
+        return False
+
+    # Check if PDF-extracted authors are last-name-only (no first names or initials)
+    ref_authors_are_last_name_only = not any(has_first_name_or_initial(a) for a in ref_authors if a.strip())
 
     if ref_authors_are_last_name_only:
         # Only compare last names
-        ref_set = set(get_last_name(a) for a in ref_authors)
-        found_set = set(get_last_name(a) for a in found_authors)
+        ref_surnames = [get_last_name(a) for a in ref_authors if get_last_name(a)]
+        found_surnames = [get_last_name(a) for a in found_authors if get_last_name(a)]
+
+        # Check for matches, including partial surname matches
+        # e.g., "Bavel" should match "Van Bavel"
+        for ref_name in ref_surnames:
+            for found_name in found_surnames:
+                if ref_name == found_name:
+                    return True
+                # Check if one surname ends with the other (handles "Bavel" vs "Van Bavel")
+                if found_name.endswith(ref_name) or ref_name.endswith(found_name):
+                    return True
+        return False
     else:
         ref_set = set(normalize_author(a) for a in ref_authors)
         found_set = set(normalize_author(a) for a in found_authors)
