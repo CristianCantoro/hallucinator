@@ -114,10 +114,18 @@ def extract_doi(text):
     Returns the DOI string (e.g., "10.1234/example") or None if not found.
     """
     # First, fix DOIs that are split across lines (apply to all text before pattern matching)
-    # Pattern 1: DOI ending with a period followed by newline and digits
+    # Pattern 1: DOI ending with a period followed by newline and 3+ digits
     # e.g., "10.1145/3442381.\n3450048" -> "10.1145/3442381.3450048"
     # e.g., "10.48550/arXiv.2404.\n06011" -> "10.48550/arXiv.2404.06011"
-    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d+)', r'\1\2', text)
+    # Requires 3+ digits to avoid joining sentence periods with short page numbers (e.g., ".\n18")
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d{3,})', r'\1\2', text)
+
+    # Pattern 1b: DOI ending with digits followed by newline and DOI continuation
+    # e.g., "10.1109/SP40000.20\n20.00038" -> "10.1109/SP40000.2020.00038"
+    # e.g., "10.1145/2884781.2884\n807" -> "10.1145/2884781.2884807"
+    # e.g., "10.1109/TSE.20\n18.2884955" -> "10.1109/TSE.2018.2884955"
+    # Continuation must look like DOI content: digits optionally followed by .digits
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\d)\s*\n\s*(\d+(?:\.\d+)*)', r'\1\2', text_fixed)
 
     # Pattern 2: DOI ending with a dash followed by newline and continuation
     # e.g., "10.2478/popets-\n2019-0037" -> "10.2478/popets-2019-0037"
@@ -126,6 +134,9 @@ def extract_doi(text):
     # Pattern 3: URL split across lines - doi.org URL followed by newline and DOI continuation
     # e.g., "https://doi.org/10.48550/arXiv.2404.\n06011"
     text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d+)', r'\1\2', text_fixed, flags=re.IGNORECASE)
+
+    # Pattern 3b: URL split mid-number
+    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>)}]+\d)\s*\n\s*(\d[^\s\]>)}]*)', r'\1\2', text_fixed, flags=re.IGNORECASE)
 
     # Priority 1: Extract from URL format (most reliable - clear boundaries)
     # Matches https://doi.org/... or http://dx.doi.org/... or http://doi.org/...
