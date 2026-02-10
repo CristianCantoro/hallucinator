@@ -5,20 +5,27 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::view::spinner_char;
 
 /// Render the file picker screen into the given area.
 pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let picker = &app.file_picker;
 
-    let chunks = Layout::vertical([
+    let has_extracting = app.extracting_archive.is_some();
+
+    let mut constraints = vec![
         Constraint::Length(1), // header
         Constraint::Length(1), // current dir
         Constraint::Min(5),    // file list
         Constraint::Length(3), // selected summary
-        Constraint::Length(1), // footer
-    ])
-    .split(area);
+    ];
+    if has_extracting {
+        constraints.push(Constraint::Length(1)); // extracting indicator
+    }
+    constraints.push(Constraint::Length(1)); // footer
+
+    let chunks = Layout::vertical(constraints).split(area);
 
     // Header
     let header = Line::from(vec![
@@ -140,10 +147,38 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     );
     f.render_widget(summary, chunks[3]);
 
+    // Extracting indicator
+    let mut footer_idx = 4;
+    if let Some(archive_name) = &app.extracting_archive {
+        let remaining = app.pending_archive_extractions.len();
+        let label = if remaining > 1 {
+            format!(
+                " {} Extracting {} ({} more queued)...",
+                spinner_char(app.tick),
+                archive_name,
+                remaining - 1,
+            )
+        } else {
+            format!(
+                " {} Extracting {}...",
+                spinner_char(app.tick),
+                archive_name,
+            )
+        };
+        let line = Line::from(Span::styled(
+            label,
+            Style::default()
+                .fg(theme.active)
+                .add_modifier(Modifier::BOLD),
+        ));
+        f.render_widget(Paragraph::new(line), chunks[footer_idx]);
+        footer_idx += 1;
+    }
+
     // Footer
     let footer = Line::from(Span::styled(
         " j/k:navigate  Space/Enter:select  Enter:open dir  Esc:done  ?:help  q:quit",
         theme.footer_style(),
     ));
-    f.render_widget(Paragraph::new(footer), chunks[4]);
+    f.render_widget(Paragraph::new(footer), chunks[footer_idx]);
 }

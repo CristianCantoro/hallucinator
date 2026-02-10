@@ -121,11 +121,13 @@ pub async fn check_references(
         }
     }
 
-    // Retry pass: re-check references that had failed DBs
+    // Retry pass: re-check references that had failed DBs (concurrent)
     if !retry_candidates.is_empty() && !cancel.is_cancelled() {
         progress(ProgressEvent::RetryPass {
             count: retry_candidates.len(),
         });
+
+        let mut retry_handles = Vec::new();
 
         for (i, reference) in retry_candidates {
             if cancel.is_cancelled() {
@@ -135,34 +137,59 @@ pub async fn check_references(
             let prev_result = results[i].as_ref().unwrap();
             let failed_dbs = prev_result.failed_dbs.clone();
 
-            let progress_for_db = Arc::clone(&progress);
-            let ref_index = i;
-            let on_db_complete = move |db_result: DbResult| {
-                progress_for_db(ProgressEvent::DatabaseQueryComplete {
-                    paper_index: 0,
-                    ref_index,
-                    db_name: db_result.db_name.clone(),
-                    status: db_result.status.clone(),
-                    elapsed: db_result.elapsed.unwrap_or_default(),
-                });
-            };
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let config = Arc::clone(&config);
+            let client = client.clone();
+            let progress = Arc::clone(&progress);
+            let cancel = cancel.clone();
 
-            let result = check_single_reference_retry(
-                &reference,
-                &config,
-                &client,
-                &failed_dbs,
-                Some(&on_db_complete),
-            )
-            .await;
+            let handle = tokio::spawn(async move {
+                let _permit = permit;
 
-            // Only update if retry found something better
-            if result.status != Status::NotFound {
-                progress(ProgressEvent::Result {
-                    index: i,
-                    total,
-                    result: result.clone(),
-                });
+                if cancel.is_cancelled() {
+                    return (i, None);
+                }
+
+                let progress_for_db = Arc::clone(&progress);
+                let ref_index = i;
+                let on_db_complete = move |db_result: DbResult| {
+                    progress_for_db(ProgressEvent::DatabaseQueryComplete {
+                        paper_index: 0,
+                        ref_index,
+                        db_name: db_result.db_name.clone(),
+                        status: db_result.status.clone(),
+                        elapsed: db_result.elapsed.unwrap_or_default(),
+                    });
+                };
+
+                let result = check_single_reference_retry(
+                    &reference,
+                    &config,
+                    &client,
+                    &failed_dbs,
+                    Some(&on_db_complete),
+                )
+                .await;
+
+                // Only emit update if retry found something better
+                if result.status != Status::NotFound {
+                    progress(ProgressEvent::Result {
+                        index: i,
+                        total,
+                        result: result.clone(),
+                    });
+                    (i, Some(result))
+                } else {
+                    (i, None)
+                }
+            });
+
+            retry_handles.push(handle);
+        }
+
+        // Collect retry results
+        for handle in retry_handles {
+            if let Ok((i, Some(result))) = handle.await {
                 results[i] = Some(result);
             }
         }

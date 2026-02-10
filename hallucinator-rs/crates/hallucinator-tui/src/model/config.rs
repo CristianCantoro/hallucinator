@@ -42,6 +42,7 @@ pub struct ConfigState {
     pub s2_api_key: String,
     pub disabled_dbs: Vec<(String, bool)>, // (name, enabled)
     pub dblp_offline_path: String,
+    pub acl_offline_path: String,
     pub max_concurrent_papers: usize,
     pub max_concurrent_refs: usize,
     pub db_timeout_secs: u64,
@@ -77,6 +78,7 @@ impl Default for ConfigState {
             s2_api_key: String::new(),
             disabled_dbs: all_dbs,
             dblp_offline_path: String::new(),
+            acl_offline_path: String::new(),
             max_concurrent_papers: 1,
             max_concurrent_refs: 4,
             db_timeout_secs: 10,

@@ -164,11 +164,33 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme) 
         ),
         Span::styled(display_val, val_style),
     ]));
+
+    // Item 1: ACL offline path (editable)
+    let cursor = if config.item_cursor == 1 { "> " } else { "  " };
+    let display_val = if config.editing && config.item_cursor == 1 {
+        format!("{}\u{2588}", config.edit_buffer)
+    } else if config.acl_offline_path.is_empty() {
+        "(not set)".to_string()
+    } else {
+        config.acl_offline_path.clone()
+    };
+    let val_style = if config.editing && config.item_cursor == 1 {
+        Style::default().fg(theme.active)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {}{:<20}", cursor, "ACL Offline Path"),
+            Style::default().fg(theme.text),
+        ),
+        Span::styled(display_val, val_style),
+    ]));
     lines.push(Line::from(""));
 
-    // Items 1..N: DB toggles
+    // Items 2..N: DB toggles
     for (i, (name, enabled)) in config.disabled_dbs.iter().enumerate() {
-        let item_idx = i + 1; // offset by 1 for the DBLP path field
+        let item_idx = i + 2; // offset by 2 for the DBLP + ACL path fields
         let cursor = if config.item_cursor == item_idx {
             "> "
         } else {

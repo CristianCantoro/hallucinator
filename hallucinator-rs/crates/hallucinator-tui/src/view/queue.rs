@@ -86,7 +86,7 @@ fn render_progress_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let elapsed = app.elapsed();
     let elapsed_str = format!("{}:{:02}", elapsed.as_secs() / 60, elapsed.as_secs() % 60);
 
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" ", Style::default()),
         Span::styled(&bar, Style::default().fg(theme.active)),
         Span::styled(
@@ -94,9 +94,23 @@ fn render_progress_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             Style::default().fg(theme.text),
         ),
         Span::styled(elapsed_str, Style::default().fg(theme.dim)),
-    ]);
+    ];
 
-    f.render_widget(Paragraph::new(line), area);
+    // Show archive extraction indicator if active
+    if let Some(archive_name) = &app.extracting_archive {
+        spans.push(Span::styled(
+            format!(
+                " {} Extracting {}...",
+                spinner_char(app.tick),
+                archive_name,
+            ),
+            Style::default()
+                .fg(theme.active)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_search_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -124,7 +138,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
 
     // Build header row
     let header_cells = if wide {
-        vec!["#", "Paper", "Refs", "OK", "Mis", "NF", "Ret", "Status"]
+        vec!["#", "Paper", "Refs", "OK", "Mis", "NF", "Ret", "%", "Status"]
     } else {
         vec!["#", "Paper", "Refs", "Prob", "Status"]
     };
@@ -148,7 +162,19 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
             let phase_style = Style::default().fg(theme.paper_phase_color(&paper.phase));
 
             let status_text = match &paper.phase {
-                PaperPhase::Checking | PaperPhase::Extracting | PaperPhase::Retrying => {
+                PaperPhase::Retrying => {
+                    if paper.retry_total > 0 {
+                        format!(
+                            "{} Retrying {}/{}",
+                            spinner_char(app.tick),
+                            paper.retry_done,
+                            paper.retry_total
+                        )
+                    } else {
+                        format!("{} Retrying...", spinner_char(app.tick))
+                    }
+                }
+                PaperPhase::Checking | PaperPhase::Extracting => {
                     format!("{} {}", spinner_char(app.tick), paper.phase.label())
                 }
                 _ => paper.phase.label().to_string(),
@@ -159,6 +185,21 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                     format!("{}", paper.total_refs)
                 } else {
                     "\u{2014}".to_string()
+                };
+                let pct = paper.problematic_pct();
+                let pct_text = if paper.total_refs > 0 && paper.completed_count() > 0 {
+                    if pct >= 10.0 {
+                        format!("{:.0}", pct)
+                    } else {
+                        format!("{:.1}", pct)
+                    }
+                } else {
+                    "\u{2014}".to_string()
+                };
+                let pct_style = if pct > 0.0 {
+                    Style::default().fg(theme.not_found)
+                } else {
+                    Style::default().fg(theme.dim)
                 };
                 Row::new(vec![
                     Cell::from(num),
@@ -172,6 +213,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
                         .style(Style::default().fg(theme.not_found)),
                     Cell::from(format!("{}", paper.stats.retracted))
                         .style(Style::default().fg(theme.retracted)),
+                    Cell::from(pct_text).style(pct_style),
                     Cell::from(status_text).style(phase_style),
                 ])
             } else {
@@ -200,6 +242,7 @@ fn render_table(f: &mut Frame, area: Rect, app: &App) {
         vec![
             Constraint::Length(4),
             Constraint::Min(20),
+            Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(5),

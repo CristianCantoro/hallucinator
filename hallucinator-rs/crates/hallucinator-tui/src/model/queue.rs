@@ -38,6 +38,10 @@ pub struct PaperState {
     /// Indexed by reference position; `None` = not yet completed.
     pub results: Vec<Option<ValidationResult>>,
     pub error: Option<String>,
+    /// Total refs to retry in the retry pass.
+    pub retry_total: usize,
+    /// Completed retry count.
+    pub retry_done: usize,
 }
 
 impl PaperState {
@@ -49,6 +53,8 @@ impl PaperState {
             stats: CheckStats::default(),
             results: Vec::new(),
             error: None,
+            retry_total: 0,
+            retry_done: 0,
         }
     }
 
@@ -112,6 +118,16 @@ impl PaperState {
     pub fn problems(&self) -> usize {
         self.stats.not_found + self.stats.author_mismatch + self.stats.retracted
     }
+
+    /// Percentage of checked references that are problematic (0.0 - 100.0).
+    pub fn problematic_pct(&self) -> f64 {
+        let checked = self.total_refs.saturating_sub(self.stats.skipped);
+        if checked == 0 {
+            0.0
+        } else {
+            (self.problems() as f64 / checked as f64) * 100.0
+        }
+    }
 }
 
 /// Sort order for the queue table.
@@ -119,6 +135,7 @@ impl PaperState {
 pub enum SortOrder {
     Original,
     Problems,
+    ProblematicPct,
     Name,
 }
 
@@ -126,7 +143,8 @@ impl SortOrder {
     pub fn next(self) -> Self {
         match self {
             Self::Original => Self::Problems,
-            Self::Problems => Self::Name,
+            Self::Problems => Self::ProblematicPct,
+            Self::ProblematicPct => Self::Name,
             Self::Name => Self::Original,
         }
     }
@@ -135,6 +153,7 @@ impl SortOrder {
         match self {
             Self::Original => "order",
             Self::Problems => "problems",
+            Self::ProblematicPct => "% flagged",
             Self::Name => "name",
         }
     }

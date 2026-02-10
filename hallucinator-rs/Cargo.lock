@@ -1068,12 +1068,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-acl"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "futures-util",
+ "once_cell",
+ "quick-xml",
+ "rapidfuzz",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "hallucinator-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "dotenvy",
+ "hallucinator-acl",
  "hallucinator-core",
  "hallucinator-dblp",
  "hallucinator-pdf",
@@ -1087,6 +1107,7 @@ dependencies = [
 name = "hallucinator-core"
 version = "0.1.0"
 dependencies = [
+ "hallucinator-acl",
  "hallucinator-dblp",
  "hallucinator-pdf",
  "log",
@@ -1145,6 +1166,7 @@ dependencies = [
  "clap",
  "dirs",
  "dotenvy",
+ "hallucinator-acl",
  "hallucinator-core",
  "hallucinator-dblp",
  "hallucinator-pdf",

@@ -166,3 +166,15 @@ pub fn open_dblp_db(path: &PathBuf) -> anyhow::Result<Arc<Mutex<hallucinator_dbl
     let db = hallucinator_dblp::DblpDatabase::open(path)?;
     Ok(Arc::new(Mutex::new(db)))
 }
+
+/// Open offline ACL Anthology database if a path is configured, returning the Arc<Mutex<..>> handle.
+pub fn open_acl_db(path: &PathBuf) -> anyhow::Result<Arc<Mutex<hallucinator_acl::AclDatabase>>> {
+    if !path.exists() {
+        anyhow::bail!(
+            "Offline ACL database not found at {}. Use 'hallucinator-tui update-acl' to build it.",
+            path.display(),
+        );
+    }
+    let db = hallucinator_acl::AclDatabase::open(path)?;
+    Ok(Arc::new(Mutex::new(db)))
+}

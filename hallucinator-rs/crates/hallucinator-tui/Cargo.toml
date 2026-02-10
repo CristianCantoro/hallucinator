@@ -13,6 +13,7 @@ path = "src/main.rs"
 hallucinator-core.workspace = true
 hallucinator-pdf.workspace = true
 hallucinator-dblp.workspace = true
+hallucinator-acl.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 clap.workspace = true

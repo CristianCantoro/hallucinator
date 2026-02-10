@@ -45,6 +45,8 @@ pub enum CoreError {
     Http(#[from] reqwest::Error),
     #[error("DBLP error: {0}")]
     Dblp(#[from] hallucinator_dblp::DblpError),
+    #[error("ACL error: {0}")]
+    Acl(#[from] hallucinator_acl::AclError),
     #[error("validation error: {0}")]
     Validation(String),
 }
@@ -148,6 +150,8 @@ pub struct Config {
     pub s2_api_key: Option<String>,
     pub dblp_offline_path: Option<PathBuf>,
     pub dblp_offline_db: Option<Arc<Mutex<hallucinator_dblp::DblpDatabase>>>,
+    pub acl_offline_path: Option<PathBuf>,
+    pub acl_offline_db: Option<Arc<Mutex<hallucinator_acl::AclDatabase>>>,
     pub max_concurrent_refs: usize,
     pub db_timeout_secs: u64,
     pub db_timeout_short_secs: u64,
@@ -165,6 +169,11 @@ impl std::fmt::Debug for Config {
                 "dblp_offline_db",
                 &self.dblp_offline_db.as_ref().map(|_| "<open>"),
             )
+            .field("acl_offline_path", &self.acl_offline_path)
+            .field(
+                "acl_offline_db",
+                &self.acl_offline_db.as_ref().map(|_| "<open>"),
+            )
             .field("max_concurrent_refs", &self.max_concurrent_refs)
             .field("db_timeout_secs", &self.db_timeout_secs)
             .field("db_timeout_short_secs", &self.db_timeout_short_secs)
@@ -181,6 +190,8 @@ impl Default for Config {
             s2_api_key: None,
             dblp_offline_path: None,
             dblp_offline_db: None,
+            acl_offline_path: None,
+            acl_offline_db: None,
             max_concurrent_refs: 4,
             db_timeout_secs: 10,
             db_timeout_short_secs: 5,

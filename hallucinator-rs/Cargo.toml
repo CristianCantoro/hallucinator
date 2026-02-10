@@ -4,6 +4,7 @@ members = [
     "crates/hallucinator-pdf",
     "crates/hallucinator-core",
     "crates/hallucinator-dblp",
+    "crates/hallucinator-acl",
     "crates/hallucinator-cli",
     "crates/hallucinator-web",
     "crates/hallucinator-tui",
@@ -19,6 +20,7 @@ license = "AGPL-3.0-or-later"
 hallucinator-pdf = { path = "crates/hallucinator-pdf" }
 hallucinator-core = { path = "crates/hallucinator-core" }
 hallucinator-dblp = { path = "crates/hallucinator-dblp" }
+hallucinator-acl = { path = "crates/hallucinator-acl" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }

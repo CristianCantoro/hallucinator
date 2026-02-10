@@ -23,6 +23,7 @@ pub struct ApiKeysConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DatabasesConfig {
     pub dblp_offline_path: Option<String>,
+    pub acl_offline_path: Option<String>,
     pub disabled: Option<Vec<String>>,
 }
 
@@ -89,6 +90,15 @@ fn merge(base: ConfigFile, overlay: ConfigFile) -> ConfigFile {
                     base.databases
                         .as_ref()
                         .and_then(|d| d.dblp_offline_path.clone())
+                }),
+            acl_offline_path: overlay
+                .databases
+                .as_ref()
+                .and_then(|d| d.acl_offline_path.clone())
+                .or_else(|| {
+                    base.databases
+                        .as_ref()
+                        .and_then(|d| d.acl_offline_path.clone())
                 }),
             disabled: overlay
                 .databases
@@ -188,6 +198,11 @@ pub fn apply_to_config_state(file_cfg: &ConfigFile, state: &mut ConfigState) {
                 state.dblp_offline_path = path.clone();
             }
         }
+        if let Some(ref path) = db.acl_offline_path {
+            if !path.is_empty() {
+                state.acl_offline_path = path.clone();
+            }
+        }
         if let Some(ref disabled) = db.disabled {
             for (name, enabled) in &mut state.disabled_dbs {
                 if disabled.iter().any(|d| d.eq_ignore_ascii_case(name)) {
@@ -252,6 +267,11 @@ pub fn from_config_state(state: &ConfigState) -> ConfigFile {
                 None
             } else {
                 Some(state.dblp_offline_path.clone())
+            },
+            acl_offline_path: if state.acl_offline_path.is_empty() {
+                None
+            } else {
+                Some(state.acl_offline_path.clone())
             },
             disabled: if disabled.is_empty() {
                 None

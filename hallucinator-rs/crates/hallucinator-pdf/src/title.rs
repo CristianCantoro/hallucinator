@@ -107,6 +107,15 @@ pub fn clean_title(title: &str, from_quotes: bool) -> String {
         title = title[..=qmark_pos].to_string();
     }
 
+    // Handle "? JournalName, vol(issue)" — journal name bleeding after question mark
+    static QMARK_JOURNAL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\?\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*[\(:]").unwrap()
+    });
+    if let Some(m) = QMARK_JOURNAL_RE.find(&title) {
+        let qmark_pos = title[..m.end()].rfind('?').unwrap();
+        title = title[..=qmark_pos].to_string();
+    }
+
     // Apply cutoff patterns to remove trailing venue/metadata
     title = apply_cutoff_patterns(&title);
 
@@ -126,6 +135,11 @@ fn try_quoted_title(ref_text: &str) -> Option<(String, bool)> {
             Regex::new(r#"[\u{201c}\u{201d}"]([^\u{201c}\u{201d}"]+)[\u{201c}\u{201d}"]"#).unwrap(),
             // Regular quotes
             Regex::new(r#""([^"]+)""#).unwrap(),
+            // Smart single quotes (Harvard/APA style): \u2018...\u2019
+            Regex::new(r"[\u{2018}]([^\u{2018}\u{2019}]{10,})[\u{2019}]").unwrap(),
+            // Plain single quotes (Harvard/APA style): require ') ' or similar delimiter
+            // to avoid matching possessive apostrophes
+            Regex::new(r"(?:^|[\s(])'([^']{10,})'(?:\s*[,.]|\s*$)").unwrap(),
         ]
     });
 
@@ -293,13 +307,22 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
             Regex::new(r"\.\s*URL\s+").unwrap(),
             Regex::new(r"\.\s*Tech\.\s*rep\.").unwrap(),
             Regex::new(r"\.\s*pp?\.?\s*\d+").unwrap(),
+            // Journal name after sentence-ending punctuation: "? JournalName, vol(issue)"
+            Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*\(").unwrap(),
+            // Journal after ? with volume:pages: "? JournalName, vol: pages"
+            Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*:").unwrap(),
         ]
     });
 
     let mut title_end = after_year.len();
     for re in END_PATTERNS.iter() {
         if let Some(m) = re.find(after_year) {
-            title_end = title_end.min(m.start());
+            let candidate = if after_year.as_bytes().get(m.start()).map_or(false, |&b| b == b'?' || b == b'!') {
+                m.start() + 1
+            } else {
+                m.start()
+            };
+            title_end = title_end.min(candidate);
         }
     }
 
@@ -326,13 +349,27 @@ fn try_acm_year(ref_text: &str) -> Option<(String, bool)> {
             Regex::new(r"\.\s*[Ii]n\s+[A-Z]").unwrap(),
             Regex::new(r"\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)").unwrap(),
             Regex::new(r"\s+doi:").unwrap(),
+            // Journal name after sentence-ending punctuation: "? JournalName, vol(issue)"
+            Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*\(").unwrap(),
+            // Journal after ? with volume:issue pattern: "? JournalName, vol: pages"
+            Regex::new(r"[?!]\s+[A-Z][a-zA-Z\s&]+,\s*\d+\s*:").unwrap(),
+            // Period then journal + volume/issue: ". JournalName, vol(issue)"
+            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&]+,\s*\d+\s*\(").unwrap(),
+            // Period then journal + volume:pages: ". JournalName, vol: pages"
+            Regex::new(r"\.\s*[A-Z][a-zA-Z\s&]+,\s*\d+\s*:").unwrap(),
         ]
     });
 
     let mut title_end = after_year.len();
     for re in END_PATTERNS.iter() {
         if let Some(m) = re.find(after_year) {
-            title_end = title_end.min(m.start());
+            // For patterns anchored on ? or !, keep the punctuation mark
+            let candidate = if after_year.as_bytes().get(m.start()).map_or(false, |&b| b == b'?' || b == b'!') {
+                m.start() + 1
+            } else {
+                m.start()
+            };
+            title_end = title_end.min(candidate);
         }
     }
 
@@ -593,6 +630,10 @@ fn split_sentences_skip_initials(text: &str) -> Vec<String> {
         while word_start > 0 && text.as_bytes()[word_start - 1].is_ascii_alphabetic() {
             word_start -= 1;
         }
+        // Ensure word_start is on a char boundary (backward byte walk may land inside multi-byte UTF-8)
+        while word_start > 0 && !text.is_char_boundary(word_start) {
+            word_start -= 1;
+        }
         let word_before = &text[word_start..pos];
         if MID_SENTENCE_ABBREVIATIONS.contains(word_before.to_lowercase().as_str()) {
             continue;
@@ -748,5 +789,57 @@ mod tests {
         let (title, from_quotes) = extract_title_from_reference("");
         assert!(title.is_empty());
         assert!(!from_quotes);
+    }
+
+    #[test]
+    fn test_journal_name_after_question_mark() {
+        // Journal name "New media & society" should NOT be part of the title
+        let ref_text = "Baek, Y. M.; Wojcieszak, M.; and Delli Carpini, M. X. 2012. Online versus face-to-face deliberation: Who? Why? What? With what effects? New media & society, 14(3): 363\u{2013}383";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            !cleaned.contains("New media"),
+            "Journal name leaked into title: {}",
+            cleaned,
+        );
+        assert!(
+            cleaned.contains("With what effects?"),
+            "Title should end with question mark: {}",
+            cleaned,
+        );
+    }
+
+    #[test]
+    fn test_harvard_single_quoted_title() {
+        // Harvard/APA style uses single quotes around the title
+        let ref_text = "Biswas, A., Saha, K. and De Choudhury, M. (2025) \u{2018}Political Elites in the Attention Economy: Visibility Over Civility and Credibility?\u{2019}, Proceedings of the International AAAI Conference on Web and Social Media (ICWSM).";
+        let (title, from_quotes) = extract_title_from_reference(ref_text);
+        assert!(from_quotes, "Should detect single-quoted title");
+        assert!(
+            title.contains("Political Elites"),
+            "Title should contain 'Political Elites': {}",
+            title,
+        );
+    }
+
+    #[test]
+    fn test_utf8_smart_quote_no_crash() {
+        // Regression: smart quote before period should not cause UTF-8 panic
+        let text = "Smith J. \u{201c}Some title\u{201d}. In Proceedings.";
+        let parts = split_sentences_skip_initials(text);
+        assert!(!parts.is_empty());
+    }
+
+    #[test]
+    fn test_journal_after_period() {
+        // "American Political Science Review" should not be in the title
+        let ref_text = "Fishkin, J.; Siu, A.; Diamond, L.; and Bradburn, N. 2021. Is deliberation an antidote to extreme partisan polarization? Reflections on \u{201c}America in one room\u{201d}. American Political Science Review, 115(4): 1464\u{2013}1481";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            !cleaned.contains("American Political"),
+            "Journal name leaked into title: {}",
+            cleaned,
+        );
     }
 }

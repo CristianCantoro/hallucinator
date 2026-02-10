@@ -51,6 +51,10 @@ struct Cli {
     #[arg(long)]
     dblp_offline: Option<PathBuf>,
 
+    /// Path to offline ACL Anthology database
+    #[arg(long)]
+    acl_offline: Option<PathBuf>,
+
     /// Comma-separated list of databases to disable
     #[arg(long, value_delimiter = ',')]
     disable_dbs: Vec<String>,
@@ -76,8 +80,12 @@ struct Cli {
 enum Command {
     /// Download and build the offline DBLP database
     UpdateDblp {
-        /// Path to store the DBLP SQLite database
-        /// (default: <data_dir>/hallucinator/dblp.db)
+        /// Path to store the DBLP SQLite database (default: ./dblp.db)
+        path: Option<PathBuf>,
+    },
+    /// Download and build the offline ACL Anthology database
+    UpdateAcl {
+        /// Path to store the ACL SQLite database (default: ./acl.db)
         path: Option<PathBuf>,
     },
 }
@@ -91,13 +99,12 @@ async fn main() -> anyhow::Result<()> {
     if let Some(command) = cli.command {
         return match command {
             Command::UpdateDblp { path } => {
-                let db_path = path.unwrap_or_else(|| {
-                    dirs::data_dir()
-                        .unwrap_or_else(|| PathBuf::from("."))
-                        .join("hallucinator")
-                        .join("dblp.db")
-                });
+                let db_path = path.unwrap_or_else(|| PathBuf::from("dblp.db"));
                 update_dblp(&db_path).await
+            }
+            Command::UpdateAcl { path } => {
+                let db_path = path.unwrap_or_else(|| PathBuf::from("acl.db"));
+                update_acl(&db_path).await
             }
         };
     }
@@ -134,6 +141,11 @@ async fn main() -> anyhow::Result<()> {
             config_state.dblp_offline_path = path;
         }
     }
+    if let Ok(path) = std::env::var("ACL_OFFLINE_PATH") {
+        if !path.is_empty() {
+            config_state.acl_offline_path = path;
+        }
+    }
     if let Ok(v) = std::env::var("DB_TIMEOUT") {
         if let Ok(secs) = v.parse::<u64>() {
             config_state.db_timeout_secs = secs;
@@ -155,6 +167,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref path) = cli.dblp_offline {
         config_state.dblp_offline_path = path.display().to_string();
     }
+    if let Some(ref path) = cli.acl_offline {
+        config_state.acl_offline_path = path.display().to_string();
+    }
     config_state.theme_name = cli.theme.clone();
     config_state.fps = cli.fps.clamp(1, 120);
 
@@ -162,6 +177,40 @@ async fn main() -> anyhow::Result<()> {
     for (name, enabled) in &mut config_state.disabled_dbs {
         if cli.disable_dbs.iter().any(|d| d.eq_ignore_ascii_case(name)) {
             *enabled = false;
+        }
+    }
+
+    // Auto-detect default DBLP DB if no explicit path configured
+    // Check CWD first (default update-dblp location), then platform data dir
+    if config_state.dblp_offline_path.is_empty() {
+        let candidates = [
+            PathBuf::from("dblp.db"),
+            dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("hallucinator")
+                .join("dblp.db"),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                config_state.dblp_offline_path = candidate.display().to_string();
+                break;
+            }
+        }
+    }
+    // Auto-detect default ACL DB if no explicit path configured
+    if config_state.acl_offline_path.is_empty() {
+        let candidates = [
+            PathBuf::from("acl.db"),
+            dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("hallucinator")
+                .join("acl.db"),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                config_state.acl_offline_path = candidate.display().to_string();
+                break;
+            }
         }
     }
 
@@ -176,6 +225,21 @@ async fn main() -> anyhow::Result<()> {
     let dblp_offline_db: Option<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> =
         if let Some(ref path) = dblp_offline_path {
             Some(backend::open_dblp_db(path)?)
+        } else {
+            None
+        };
+
+    // Resolve ACL offline path from config state
+    let acl_offline_path: Option<PathBuf> = if config_state.acl_offline_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&config_state.acl_offline_path))
+    };
+
+    // Open ACL database if configured
+    let acl_offline_db: Option<Arc<Mutex<hallucinator_acl::AclDatabase>>> =
+        if let Some(ref path) = acl_offline_path {
+            Some(backend::open_acl_db(path)?)
         } else {
             None
         };
@@ -235,9 +299,6 @@ async fn main() -> anyhow::Result<()> {
     // Apply the fully-resolved config state
     app.config_state = config_state;
 
-    // Set banner dismiss after FPS is known (~3 seconds)
-    app.banner_dismiss_tick = Some(app.config_state.fps as usize * 3);
-
     // Show config file path if one was loaded
     if let Some(path) = config_file::config_path() {
         if path.exists() {
@@ -246,7 +307,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Startup hint if no offline DBLP configured (logged last so it shows first)
+    // Startup hints if no offline DBs configured (logged last so they show first)
+    if app.config_state.acl_offline_path.is_empty() {
+        app.activity.log_warn(
+            "No offline ACL DB. Run 'hallucinator-tui update-acl' for faster lookups."
+                .to_string(),
+        );
+    }
     if app.config_state.dblp_offline_path.is_empty() {
         app.activity.log_warn(
             "No offline DBLP DB. Run 'hallucinator-tui update-dblp' for faster lookups."
@@ -274,6 +341,8 @@ async fn main() -> anyhow::Result<()> {
     let event_tx_for_backend = event_tx.clone();
     let mut cached_dblp_path = dblp_offline_path.clone();
     let mut cached_dblp_db = dblp_offline_db.clone();
+    let mut cached_acl_path = acl_offline_path.clone();
+    let mut cached_acl_db = acl_offline_db.clone();
     let check_openalex_authors = cli.check_openalex_authors;
     tokio::spawn(async move {
         // Per-batch cancel token — cancelled when user requests stop
@@ -300,8 +369,20 @@ async fn main() -> anyhow::Result<()> {
                         };
                     }
 
+                    // If user changed the ACL path in config, try to open the new DB
+                    if config.acl_offline_path != cached_acl_path {
+                        cached_acl_path = config.acl_offline_path.clone();
+                        cached_acl_db = if let Some(ref path) = cached_acl_path {
+                            backend::open_acl_db(path).ok()
+                        } else {
+                            None
+                        };
+                    }
+
                     config.dblp_offline_path = cached_dblp_path.clone();
                     config.dblp_offline_db = cached_dblp_db.clone();
+                    config.acl_offline_path = cached_acl_path.clone();
+                    config.acl_offline_db = cached_acl_db.clone();
                     config.check_openalex_authors = check_openalex_authors;
 
                     let tx = event_tx_for_backend.clone();
@@ -554,8 +635,148 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
     })
     .await?;
 
+    let canonical = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.clone());
     if !updated {
-        println!("Database is already up to date.");
+        println!("Database is already up to date: {}", canonical.display());
+    } else {
+        println!("DBLP database saved to: {}", canonical.display());
+    }
+
+    Ok(())
+}
+
+async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
+    use indicatif::{HumanCount, MultiProgress, ProgressBar, ProgressStyle};
+    use std::time::Instant;
+
+    // Ensure parent directory exists
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    println!(
+        "Building offline ACL Anthology database at: {}",
+        db_path.display()
+    );
+
+    let multi = MultiProgress::new();
+
+    let dl_bar_style = ProgressStyle::with_template(
+        "{spinner:.cyan} {msg} [{bar:40.cyan/dim}] {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
+    )
+    .unwrap()
+    .progress_chars("=> ");
+
+    let dl_unknown_style =
+        ProgressStyle::with_template("{spinner:.cyan} {msg} {bytes} ({bytes_per_sec})").unwrap();
+
+    let parse_bar_style = ProgressStyle::with_template(
+        "{spinner:.green} {msg} [{bar:40.green/dim}] {percent}% (eta {eta})",
+    )
+    .unwrap()
+    .progress_chars("=> ");
+
+    let parse_spinner_style = ProgressStyle::with_template("{spinner:.green} {msg}").unwrap();
+
+    let dl_bar = multi.add(ProgressBar::new(0));
+    dl_bar.set_style(dl_unknown_style.clone());
+    dl_bar.set_message("Connecting to GitHub...");
+    dl_bar.enable_steady_tick(Duration::from_millis(120));
+
+    let parse_bar = multi.add(ProgressBar::new(0));
+    parse_bar.set_style(parse_spinner_style.clone());
+    parse_bar.enable_steady_tick(Duration::from_millis(120));
+
+    let parse_start = std::cell::Cell::new(None::<Instant>);
+
+    let updated = hallucinator_acl::build_database(db_path, |event| match event {
+        hallucinator_acl::BuildProgress::Downloading {
+            bytes_downloaded,
+            total_bytes,
+        } => {
+            if let Some(total) = total_bytes {
+                if dl_bar.length() == Some(0) {
+                    dl_bar.set_length(total);
+                    dl_bar.set_style(dl_bar_style.clone());
+                }
+                dl_bar.set_position(bytes_downloaded);
+                dl_bar.set_message("acl-anthology.tar.gz");
+            } else {
+                dl_bar.set_position(bytes_downloaded);
+                dl_bar.set_message("acl-anthology.tar.gz");
+            }
+        }
+        hallucinator_acl::BuildProgress::Extracting { files_extracted } => {
+            if !dl_bar.is_finished() {
+                dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
+            }
+            parse_bar.set_message(format!("Extracting XML files... ({})", files_extracted));
+        }
+        hallucinator_acl::BuildProgress::Parsing {
+            records_parsed,
+            records_inserted,
+            files_processed,
+            files_total,
+        } => {
+            if !dl_bar.is_finished() {
+                dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
+            }
+            if parse_start.get().is_none() {
+                parse_start.set(Some(Instant::now()));
+            }
+            if files_total > 0 && parse_bar.length() == Some(0) {
+                parse_bar.set_length(files_total);
+                parse_bar.set_style(parse_bar_style.clone());
+            }
+            parse_bar.set_position(files_processed);
+            let elapsed = parse_start.get().unwrap().elapsed().as_secs_f64();
+            let inserted_per_sec = if elapsed > 0.0 {
+                records_inserted as f64 / elapsed
+            } else {
+                0.0
+            };
+            parse_bar.set_message(format!(
+                "{} parsed, {} inserted ({}/s)",
+                HumanCount(records_parsed),
+                HumanCount(records_inserted),
+                HumanCount(inserted_per_sec as u64),
+            ));
+        }
+        hallucinator_acl::BuildProgress::RebuildingIndex => {
+            if !dl_bar.is_finished() {
+                dl_bar.finish_with_message(format!("Downloaded in {:.0?}", dl_bar.elapsed()));
+            }
+            parse_bar.set_style(parse_spinner_style.clone());
+            parse_bar.set_message("Rebuilding FTS search index...");
+        }
+        hallucinator_acl::BuildProgress::Complete {
+            publications,
+            authors,
+            skipped,
+        } => {
+            let total_elapsed = parse_start
+                .get()
+                .map(|s| format!(" in {:.0?}", s.elapsed()))
+                .unwrap_or_default();
+            if skipped {
+                parse_bar.finish_with_message("Database is already up to date (same commit SHA)");
+            } else {
+                parse_bar.finish_with_message(format!(
+                    "Indexed {} publications, {} authors{}",
+                    HumanCount(publications),
+                    HumanCount(authors),
+                    total_elapsed
+                ));
+            }
+        }
+    })
+    .await?;
+
+    let canonical = std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.clone());
+    if !updated {
+        println!("Database is already up to date: {}", canonical.display());
+    } else {
+        println!("ACL database saved to: {}", canonical.display());
     }
 
     Ok(())

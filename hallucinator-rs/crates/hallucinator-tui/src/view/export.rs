@@ -13,6 +13,7 @@ pub enum ExportFormat {
     Csv,
     Markdown,
     Text,
+    Html,
 }
 
 impl ExportFormat {
@@ -22,6 +23,7 @@ impl ExportFormat {
             ExportFormat::Csv,
             ExportFormat::Markdown,
             ExportFormat::Text,
+            ExportFormat::Html,
         ]
     }
 
@@ -31,6 +33,7 @@ impl ExportFormat {
             Self::Csv => "CSV",
             Self::Markdown => "Markdown",
             Self::Text => "Plain Text",
+            Self::Html => "HTML",
         }
     }
 
@@ -40,6 +43,7 @@ impl ExportFormat {
             Self::Csv => "csv",
             Self::Markdown => "md",
             Self::Text => "txt",
+            Self::Html => "html",
         }
     }
 }

@@ -229,6 +229,10 @@ pub struct App {
     pub file_picker: FilePickerState,
     /// Temp directory for extracted archive PDFs (auto-cleanup on drop).
     pub temp_dir: Option<tempfile::TempDir>,
+    /// Archives waiting to be extracted (processed one per tick for UI responsiveness).
+    pub pending_archive_extractions: Vec<PathBuf>,
+    /// Name of the archive currently being extracted (shown in UI).
+    pub extracting_archive: Option<String>,
     /// Frame counter for FPS measurement.
     frame_count: u32,
     /// Last time FPS was sampled.
@@ -252,7 +256,7 @@ impl App {
             paper_refs,
             queue_cursor: 0,
             paper_cursor: 0,
-            sort_order: SortOrder::Original,
+            sort_order: SortOrder::ProblematicPct,
             queue_sorted,
             tick: 0,
             theme,
@@ -265,7 +269,7 @@ impl App {
             search_query: String::new(),
             queue_filter: QueueFilter::All,
             paper_filter: PaperFilter::All,
-            paper_sort: PaperSortOrder::RefNumber,
+            paper_sort: PaperSortOrder::Verdict,
             activity_panel_visible: true,
             start_time: None,
             frozen_elapsed: None,
@@ -283,6 +287,8 @@ impl App {
             last_throughput_tick: 0,
             file_picker: FilePickerState::new(),
             temp_dir: None,
+            pending_archive_extractions: Vec::new(),
+            extracting_archive: None,
             frame_count: 0,
             last_fps_instant: Instant::now(),
             measured_fps: 0.0,
@@ -299,6 +305,15 @@ impl App {
                     self.papers[b]
                         .problems()
                         .cmp(&self.papers[a].problems())
+                        .then_with(|| a.cmp(&b))
+                });
+            }
+            SortOrder::ProblematicPct => {
+                indices.sort_by(|&a, &b| {
+                    self.papers[b]
+                        .problematic_pct()
+                        .partial_cmp(&self.papers[a].problematic_pct())
+                        .unwrap_or(std::cmp::Ordering::Equal)
                         .then_with(|| a.cmp(&b))
                 });
             }
@@ -419,6 +434,14 @@ impl App {
                 ))
             },
             dblp_offline_db: None, // Populated from main.rs
+            acl_offline_path: if self.config_state.acl_offline_path.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(
+                    &self.config_state.acl_offline_path,
+                ))
+            },
+            acl_offline_db: None, // Populated from main.rs
             max_concurrent_refs: self.config_state.max_concurrent_refs,
             db_timeout_secs: self.config_state.db_timeout_secs,
             db_timeout_short_secs: self.config_state.db_timeout_short_secs,
@@ -428,63 +451,25 @@ impl App {
     }
 
     /// Add files from file picker to the paper queue.
-    /// PDFs are added directly. Archives are extracted and each PDF inside is added.
+    /// PDFs are added directly. Archives are queued for deferred extraction
+    /// (one per tick) so the UI can show progress.
     pub fn add_files_from_picker(&mut self) {
         let new_files: Vec<PathBuf> = self.file_picker.selected.drain(..).collect();
         if new_files.is_empty() {
             return;
         }
 
-        for path in &new_files {
-            if hallucinator_pdf::archive::is_archive_path(path) {
-                // Ensure temp_dir exists for extracted PDFs
-                if self.temp_dir.is_none() {
-                    match tempfile::tempdir() {
-                        Ok(td) => self.temp_dir = Some(td),
-                        Err(e) => {
-                            self.activity
-                                .log(format!("Failed to create temp dir: {}", e));
-                            continue;
-                        }
-                    }
+        for path in new_files {
+            if hallucinator_pdf::archive::is_archive_path(&path) {
+                // Set extracting indicator for the first archive so it shows immediately
+                if self.extracting_archive.is_none() {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    self.extracting_archive = Some(name);
                 }
-                let dir = self.temp_dir.as_ref().unwrap().path();
-
-                let max_size = self.config_state.max_archive_size_mb as u64 * 1024 * 1024;
-                match hallucinator_pdf::archive::extract_archive(path, dir, max_size) {
-                    Ok(result) => {
-                        let archive_name = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        let count = result.pdfs.len();
-                        for pdf in result.pdfs {
-                            let display_name = format!("{}/{}", archive_name, pdf.filename);
-                            self.papers.push(PaperState::new(display_name));
-                            self.ref_states.push(Vec::new());
-                            self.paper_refs.push(Vec::new());
-                            self.pdf_paths.push(pdf.path);
-                        }
-                        self.activity.log(format!(
-                            "Extracted {} PDF{} from {}",
-                            count,
-                            if count == 1 { "" } else { "s" },
-                            archive_name,
-                        ));
-                        for warning in result.warnings {
-                            self.activity.log_warn(warning);
-                        }
-                    }
-                    Err(e) => {
-                        self.activity.log(format!(
-                            "Archive error ({}): {}",
-                            path.file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_default(),
-                            e
-                        ));
-                    }
-                }
+                self.pending_archive_extractions.push(path);
             } else {
                 let filename = path
                     .file_name()
@@ -493,8 +478,74 @@ impl App {
                 self.papers.push(PaperState::new(filename));
                 self.ref_states.push(Vec::new());
                 self.paper_refs.push(Vec::new());
-                self.pdf_paths.push(path.clone());
+                self.pdf_paths.push(path);
             }
+        }
+        self.recompute_sorted_indices();
+    }
+
+    /// Process one pending archive extraction. Called from the tick handler
+    /// so the UI can render "Extracting..." between archives.
+    fn process_next_pending_archive(&mut self) {
+        let path = match self.pending_archive_extractions.first() {
+            Some(p) => p.clone(),
+            None => {
+                self.extracting_archive = None;
+                return;
+            }
+        };
+
+        let archive_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.extracting_archive = Some(archive_name.clone());
+
+        // Ensure temp_dir exists
+        if self.temp_dir.is_none() {
+            match tempfile::tempdir() {
+                Ok(td) => self.temp_dir = Some(td),
+                Err(e) => {
+                    self.activity
+                        .log(format!("Failed to create temp dir: {}", e));
+                    self.pending_archive_extractions.remove(0);
+                    self.extracting_archive = None;
+                    return;
+                }
+            }
+        }
+        let dir = self.temp_dir.as_ref().unwrap().path();
+
+        let max_size = self.config_state.max_archive_size_mb as u64 * 1024 * 1024;
+        match hallucinator_pdf::archive::extract_archive(&path, dir, max_size) {
+            Ok(result) => {
+                let count = result.pdfs.len();
+                for pdf in result.pdfs {
+                    let display_name = format!("{}/{}", archive_name, pdf.filename);
+                    self.papers.push(PaperState::new(display_name));
+                    self.ref_states.push(Vec::new());
+                    self.paper_refs.push(Vec::new());
+                    self.pdf_paths.push(pdf.path);
+                }
+                self.activity.log(format!(
+                    "Extracted {} PDF{} from {}",
+                    count,
+                    if count == 1 { "" } else { "s" },
+                    archive_name,
+                ));
+                for warning in result.warnings {
+                    self.activity.log_warn(warning);
+                }
+            }
+            Err(e) => {
+                self.activity
+                    .log(format!("Archive error ({}): {}", archive_name, e));
+            }
+        }
+
+        self.pending_archive_extractions.remove(0);
+        if self.pending_archive_extractions.is_empty() {
+            self.extracting_archive = None;
         }
         self.recompute_sorted_indices();
     }
@@ -583,13 +634,28 @@ impl App {
                             self.export_state.output_path,
                             self.export_state.format.extension()
                         );
-                        let data = crate::export::collect_paper_data(&self.papers);
-                        let refs: Vec<(String, &[Option<hallucinator_core::ValidationResult>])> =
-                            data.iter()
-                                .map(|(name, results)| (name.clone(), results.as_slice()))
-                                .collect();
+                        let paper_indices = match self.export_state.scope {
+                            crate::view::export::ExportScope::AllPapers => {
+                                (0..self.papers.len()).collect::<Vec<_>>()
+                            }
+                            crate::view::export::ExportScope::ThisPaper => {
+                                let idx = match self.screen {
+                                    Screen::Paper(i) | Screen::RefDetail(i, _) => Some(i),
+                                    Screen::Queue => {
+                                        self.queue_sorted.get(self.queue_cursor).copied()
+                                    }
+                                    _ => None,
+                                };
+                                idx.map(|i| vec![i])
+                                    .unwrap_or_else(|| (0..self.papers.len()).collect())
+                            }
+                        };
+                        let papers: Vec<&crate::model::queue::PaperState> = paper_indices
+                            .iter()
+                            .filter_map(|&i| self.papers.get(i))
+                            .collect();
                         match crate::export::export_results(
-                            &refs,
+                            &papers,
                             self.export_state.format,
                             std::path::Path::new(&path),
                         ) {
@@ -1052,6 +1118,11 @@ impl App {
                     self.last_fps_instant = Instant::now();
                 }
 
+                // Process one pending archive extraction per tick
+                if !self.pending_archive_extractions.is_empty() {
+                    self.process_next_pending_archive();
+                }
+
                 if self.screen == Screen::Queue {
                     self.recompute_sorted_indices();
                 }
@@ -1104,7 +1175,7 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::ApiKeys => 2,
-            ConfigSection::Databases => 1 + self.config_state.disabled_dbs.len(),
+            ConfigSection::Databases => 2 + self.config_state.disabled_dbs.len(),
             ConfigSection::Concurrency => 5,
             ConfigSection::Display => 2, // theme + fps
         }
@@ -1162,8 +1233,13 @@ impl App {
                     self.config_state.editing = true;
                     self.config_state.edit_buffer = self.config_state.dblp_offline_path.clone();
                     self.input_mode = InputMode::TextInput;
+                } else if self.config_state.item_cursor == 1 {
+                    // Item 1: edit ACL offline path
+                    self.config_state.editing = true;
+                    self.config_state.edit_buffer = self.config_state.acl_offline_path.clone();
+                    self.input_mode = InputMode::TextInput;
                 } else {
-                    // Items 1+: toggle DB (same as space)
+                    // Items 2+: toggle DB (same as space)
                     self.handle_config_space();
                 }
             }
@@ -1175,9 +1251,9 @@ impl App {
         use crate::model::config::ConfigSection;
         match self.config_state.section {
             ConfigSection::Databases => {
-                // Items 1+ are DB toggles (item 0 is DBLP path)
-                if self.config_state.item_cursor >= 1 {
-                    let toggle_idx = self.config_state.item_cursor - 1;
+                // Items 2+ are DB toggles (items 0-1 are DBLP/ACL paths)
+                if self.config_state.item_cursor >= 2 {
+                    let toggle_idx = self.config_state.item_cursor - 2;
                     if let Some((_, enabled)) = self.config_state.disabled_dbs.get_mut(toggle_idx) {
                         *enabled = !*enabled;
                     }
@@ -1237,11 +1313,11 @@ impl App {
                 }
                 _ => {}
             },
-            ConfigSection::Databases => {
-                if self.config_state.item_cursor == 0 {
-                    self.config_state.dblp_offline_path = buf;
-                }
-            }
+            ConfigSection::Databases => match self.config_state.item_cursor {
+                0 => self.config_state.dblp_offline_path = buf,
+                1 => self.config_state.acl_offline_path = buf,
+                _ => {}
+            },
             ConfigSection::Display => {
                 if self.config_state.item_cursor == 1 {
                     if let Ok(v) = buf.parse::<u32>() {
@@ -1336,6 +1412,10 @@ impl App {
             }
             ProgressEvent::Result { index, result, .. } => {
                 if let Some(paper) = self.papers.get_mut(paper_index) {
+                    // Track retry progress
+                    if paper.phase == PaperPhase::Retrying {
+                        paper.retry_done += 1;
+                    }
                     paper.record_result(index, result.clone());
                 }
                 if let Some(refs) = self.ref_states.get_mut(paper_index) {
@@ -1353,9 +1433,11 @@ impl App {
                 self.throughput_since_last += 1;
             }
             ProgressEvent::Warning { .. } => {}
-            ProgressEvent::RetryPass { .. } => {
+            ProgressEvent::RetryPass { count, .. } => {
                 if let Some(paper) = self.papers.get_mut(paper_index) {
                     paper.phase = PaperPhase::Retrying;
+                    paper.retry_total = count;
+                    paper.retry_done = 0;
                 }
             }
             ProgressEvent::DatabaseQueryComplete {

@@ -249,7 +249,14 @@ fn build_database_list(
         databases.push(Box::new(ssrn::Ssrn));
     }
     if should_include("ACL Anthology") {
-        databases.push(Box::new(acl::AclAnthology));
+        // Use offline ACL if available, otherwise online (scraping)
+        if let Some(ref db) = config.acl_offline_db {
+            databases.push(Box::new(acl::AclOffline {
+                db: std::sync::Arc::clone(db),
+            }));
+        } else {
+            databases.push(Box::new(acl::AclAnthology));
+        }
     }
     if should_include("NeurIPS") {
         databases.push(Box::new(neurips::NeurIPS));
