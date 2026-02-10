@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use hallucinator_core::{Config, ProgressEvent, SkipStats, ValidationResult};
 use hallucinator_pdf::ExtractionResult;
 
-use crate::archive::{self, ExtractedPdf};
+use hallucinator_pdf::archive::{self, ExtractedPdf};
 use crate::models::*;
 use crate::state::AppState;
 use crate::upload::{self, FileType, FormFields};

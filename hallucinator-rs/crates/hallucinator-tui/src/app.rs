@@ -56,6 +56,7 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub is_dir: bool,
     pub is_pdf: bool,
+    pub is_archive: bool,
 }
 
 impl FilePickerState {
@@ -83,6 +84,7 @@ impl FilePickerState {
                 path: parent.to_path_buf(),
                 is_dir: true,
                 is_pdf: false,
+                is_archive: false,
             });
         }
 
@@ -105,17 +107,20 @@ impl FilePickerState {
                         path,
                         is_dir: true,
                         is_pdf: false,
+                        is_archive: false,
                     });
                 } else {
                     let is_pdf = path
                         .extension()
                         .map(|ext| ext.eq_ignore_ascii_case("pdf"))
                         .unwrap_or(false);
+                    let is_archive = hallucinator_pdf::archive::is_archive_path(&path);
                     files.push(FileEntry {
                         name,
                         path,
                         is_dir: false,
                         is_pdf,
+                        is_archive,
                     });
                 }
             }
@@ -132,10 +137,10 @@ impl FilePickerState {
         self.scroll_offset = 0;
     }
 
-    /// Toggle selection of the current entry (only PDFs).
+    /// Toggle selection of the current entry (PDFs and archives).
     pub fn toggle_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.cursor) {
-            if entry.is_pdf {
+            if entry.is_pdf || entry.is_archive {
                 if let Some(pos) = self.selected.iter().position(|p| p == &entry.path) {
                     self.selected.remove(pos);
                 } else {
@@ -221,6 +226,8 @@ pub struct App {
     last_throughput_tick: usize,
     /// File picker state.
     pub file_picker: FilePickerState,
+    /// Temp directory for extracted archive PDFs (auto-cleanup on drop).
+    pub temp_dir: Option<tempfile::TempDir>,
 }
 
 impl App {
@@ -268,6 +275,7 @@ impl App {
             throughput_since_last: 0,
             last_throughput_tick: 0,
             file_picker: FilePickerState::new(),
+            temp_dir: None,
         }
     }
 
@@ -410,6 +418,7 @@ impl App {
     }
 
     /// Add files from file picker to the paper queue.
+    /// PDFs are added directly. Archives are extracted and each PDF inside is added.
     pub fn add_files_from_picker(&mut self) {
         let new_files: Vec<PathBuf> = self.file_picker.selected.drain(..).collect();
         if new_files.is_empty() {
@@ -417,14 +426,64 @@ impl App {
         }
 
         for path in &new_files {
-            let filename = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.display().to_string());
-            self.papers.push(PaperState::new(filename));
-            self.ref_states.push(Vec::new());
-            self.paper_refs.push(Vec::new());
-            self.pdf_paths.push(path.clone());
+            if hallucinator_pdf::archive::is_archive_path(path) {
+                // Ensure temp_dir exists for extracted PDFs
+                if self.temp_dir.is_none() {
+                    match tempfile::tempdir() {
+                        Ok(td) => self.temp_dir = Some(td),
+                        Err(e) => {
+                            self.activity.log(format!(
+                                "Failed to create temp dir: {}",
+                                e
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                let dir = self.temp_dir.as_ref().unwrap().path();
+
+                match hallucinator_pdf::archive::extract_archive(path, dir) {
+                    Ok(extracted) => {
+                        let archive_name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let count = extracted.len();
+                        for pdf in extracted {
+                            let display_name =
+                                format!("{}/{}", archive_name, pdf.filename);
+                            self.papers.push(PaperState::new(display_name));
+                            self.ref_states.push(Vec::new());
+                            self.paper_refs.push(Vec::new());
+                            self.pdf_paths.push(pdf.path);
+                        }
+                        self.activity.log(format!(
+                            "Extracted {} PDF{} from {}",
+                            count,
+                            if count == 1 { "" } else { "s" },
+                            archive_name,
+                        ));
+                    }
+                    Err(e) => {
+                        self.activity.log(format!(
+                            "Archive error ({}): {}",
+                            path.file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default(),
+                            e
+                        ));
+                    }
+                }
+            } else {
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string());
+                self.papers.push(PaperState::new(filename));
+                self.ref_states.push(Vec::new());
+                self.paper_refs.push(Vec::new());
+                self.pdf_paths.push(path.clone());
+            }
         }
         self.recompute_sorted_indices();
     }

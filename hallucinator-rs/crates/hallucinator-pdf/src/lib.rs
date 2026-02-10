@@ -4,6 +4,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
 
+pub mod archive;
 pub mod authors;
 pub mod extract;
 pub mod identifiers;

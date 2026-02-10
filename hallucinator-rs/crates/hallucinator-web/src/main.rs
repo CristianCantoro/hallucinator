@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-mod archive;
 mod handlers;
 mod models;
 mod state;

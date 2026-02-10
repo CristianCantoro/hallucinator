@@ -12,6 +12,41 @@ pub struct ExtractedPdf {
     pub filename: String,
 }
 
+/// Returns true if the given path looks like a supported archive.
+pub fn is_archive_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    name.ends_with(".zip") || name.ends_with(".tar.gz") || name.ends_with(".tgz")
+}
+
+/// Read an archive file from disk, detect its type, and extract PDFs into `dir`.
+///
+/// Supports ZIP and tar.gz archives. Type is detected by extension and magic bytes.
+pub fn extract_archive(archive_path: &Path, dir: &Path) -> Result<Vec<ExtractedPdf>, String> {
+    let data = std::fs::read(archive_path)
+        .map_err(|e| format!("Failed to read archive {}: {}", archive_path.display(), e))?;
+
+    let name = archive_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+
+    // Detect by extension first, then fall back to magic bytes
+    if name.ends_with(".zip") || data.starts_with(b"PK") {
+        extract_from_zip(&data, dir)
+    } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") || data.starts_with(&[0x1f, 0x8b])
+    {
+        extract_from_tar_gz(&data, dir)
+    } else {
+        Err(format!(
+            "Unsupported archive format: {}",
+            archive_path.display()
+        ))
+    }
+}
+
 /// Extract PDF files from a ZIP archive.
 pub fn extract_from_zip(data: &[u8], dir: &Path) -> Result<Vec<ExtractedPdf>, String> {
     let cursor = std::io::Cursor::new(data);

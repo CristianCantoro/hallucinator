@@ -148,6 +148,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(theme.text),
     )));
 
+    // Log messages (archive extraction, errors)
+    if !activity.messages.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Messages",
+            Style::default()
+                .fg(theme.active)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for msg in activity.messages.iter().rev().take(5) {
+            lines.push(Line::from(Span::styled(
+                format!(" {}", msg),
+                Style::default().fg(theme.dim),
+            )));
+        }
+    }
+
     let panel = Paragraph::new(lines)
         .block(
             Block::default()

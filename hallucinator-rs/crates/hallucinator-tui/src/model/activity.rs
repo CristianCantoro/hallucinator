@@ -67,6 +67,8 @@ pub struct ActivityState {
     pub active_queries: Vec<ActiveQuery>,
     /// Total refs completed (for throughput tracking).
     pub total_completed: usize,
+    /// Recent log messages (archive extraction, errors, etc.).
+    pub messages: VecDeque<String>,
 }
 
 impl Default for ActivityState {
@@ -76,11 +78,19 @@ impl Default for ActivityState {
             throughput_buckets: VecDeque::with_capacity(60),
             active_queries: Vec::new(),
             total_completed: 0,
+            messages: VecDeque::new(),
         }
     }
 }
 
 impl ActivityState {
+    pub fn log(&mut self, msg: String) {
+        if self.messages.len() >= 50 {
+            self.messages.pop_front();
+        }
+        self.messages.push_back(msg);
+    }
+
     pub fn record_db_complete(&mut self, db_name: &str, success: bool, elapsed_ms: f64) {
         let health = self
             .db_health

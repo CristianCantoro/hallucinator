@@ -1126,10 +1126,13 @@ dependencies = [
 name = "hallucinator-pdf"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "mupdf",
  "once_cell",
  "regex",
+ "tar",
  "thiserror",
+ "zip",
 ]
 
 [[package]]
@@ -1147,6 +1150,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
 ]
@@ -1158,21 +1162,18 @@ dependencies = [
  "anyhow",
  "axum",
  "dotenvy",
- "flate2",
  "hallucinator-core",
  "hallucinator-dblp",
  "hallucinator-pdf",
  "reqwest",
  "serde",
  "serde_json",
- "tar",
  "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "tower",
  "tower-http",
- "zip",
 ]
 
 [[package]]

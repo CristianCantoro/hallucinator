@@ -24,7 +24,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let header = Line::from(vec![
         Span::styled(" HALLUCINATOR ", theme.header_style()),
         Span::styled(
-            " > Select PDFs",
+            " > Select PDFs / Archives",
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ]);
@@ -54,7 +54,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         .map(|entry| {
             let (icon, style) = if entry.is_dir {
                 ("\u{1F4C1} ", Style::default().fg(theme.active))
-            } else if entry.is_pdf {
+            } else if entry.is_pdf || entry.is_archive {
                 let selected = picker.is_selected(&entry.path);
                 if selected {
                     (
@@ -63,6 +63,8 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
                             .fg(theme.verified)
                             .add_modifier(Modifier::BOLD),
                     )
+                } else if entry.is_archive {
+                    ("\u{1F4E6} ", Style::default().fg(theme.active))
                 } else {
                     ("\u{1F4C4} ", Style::default().fg(theme.text))
                 }
@@ -96,11 +98,11 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
     let summary_lines = if selected_count == 0 {
         vec![
             Line::from(Span::styled(
-                "  No PDFs selected",
+                "  No files selected",
                 Style::default().fg(theme.dim),
             )),
             Line::from(Span::styled(
-                "  Navigate to PDF files and press Space to select",
+                "  Navigate to PDFs or archives and press Space to select",
                 Style::default().fg(theme.dim),
             )),
         ]
@@ -117,7 +119,7 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect) {
         vec![
             Line::from(vec![Span::styled(
                 format!(
-                    "  {} PDF{} selected: ",
+                    "  {} file{} selected: ",
                     selected_count,
                     if selected_count == 1 { "" } else { "s" }
                 ),

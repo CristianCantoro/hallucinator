@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -36,20 +38,37 @@ const RAINBOW: &[(u8, u8, u8)] = &[
     (255, 0, 127), // Rose
 ];
 
-// Tip strings — the "Pro-tip: " prefix is stripped when displayed in the pane
-// (the pane header already reads "Pro-tips"), but kept for narrow-terminal fallback.
-const TIPS: &[&str] = &[
-    "Pro-tip: Press , to open config -- set API keys, concurrency, timeouts",
-    "Pro-tip: Set an OpenAlex key for broader coverage (--openalex-key or config)",
-    "Pro-tip: Build an offline DBLP database for instant local lookups (--update-dblp)",
-    "Pro-tip: Increase concurrent papers in config to process batches faster",
-    "Pro-tip: Press Space on a reference to mark false positives as safe",
-    "Pro-tip: Use s to cycle sort order, f to filter by status on queue/paper views",
-    "Pro-tip: The Semantic Scholar API key removes rate limits (--s2-api-key)",
-    "Pro-tip: Press e to export results as Markdown, JSON, or CSV",
-    "Pro-tip: References with < 5 words are auto-skipped (too short for reliable matching)",
-    "Pro-tip: Press ? anywhere for a full keybinding reference",
-];
+// Tips are loaded from tips.txt at compile time and shuffled once at startup.
+// Edit tips.txt to add/remove/reorder tips without touching Rust code.
+static TIPS_RAW: &str = include_str!("../tips.txt");
+
+/// Parse tips.txt (skip comments and blank lines) and return a shuffled order.
+/// The shuffle uses a simple LCG seeded from the process start time so that
+/// tip order varies between runs but stays stable within a single session.
+fn shuffled_tips() -> &'static [&'static str] {
+    static TIPS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    TIPS.get_or_init(|| {
+        let mut tips: Vec<&str> = TIPS_RAW
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+
+        // Fisher-Yates shuffle with a simple LCG PRNG seeded from time
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(42);
+        let mut rng = seed;
+        for i in (1..tips.len()).rev() {
+            // LCG: rng = rng * 6364136223846793005 + 1442695040888963407
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let j = (rng >> 33) as usize % (i + 1);
+            tips.swap(i, j);
+        }
+        tips
+    })
+}
 
 /// Build a single logo line with flowing rainbow colors.
 /// Block characters (█▀▄) get full brightness; light shade (░) gets dimmed
@@ -119,10 +138,11 @@ pub fn render(f: &mut Frame, theme: &Theme, tick: usize) {
     lines.push(Line::from(""));
 
     // Rotating tip
-    let tip_idx = (tick / 40) % TIPS.len();
+    let tips = shuffled_tips();
+    let tip_idx = (tick / 40) % tips.len();
     lines.push(
         Line::from(Span::styled(
-            TIPS[tip_idx].to_string(),
+            tips[tip_idx].to_string(),
             Style::default().fg(theme.dim),
         ))
         .alignment(Alignment::Center),
@@ -150,8 +170,9 @@ pub fn render_logo_bar(f: &mut Frame, area: Rect, theme: &Theme, tick: usize) ->
     }
 
     // Rotate tips every ~10 seconds (100 ticks at 10 ticks/sec)
-    let tip_idx = (tick / 100) % TIPS.len();
-    let tip_text = TIPS[tip_idx];
+    let tips = shuffled_tips();
+    let tip_idx = (tick / 100) % tips.len();
+    let tip_text = tips[tip_idx];
     // Strip prefix for the pane (header already says "Pro-tips")
     let tip_content = tip_text.strip_prefix("Pro-tip: ").unwrap_or(tip_text);
 
