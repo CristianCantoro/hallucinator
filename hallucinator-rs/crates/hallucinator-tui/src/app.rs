@@ -261,7 +261,7 @@ impl App {
             activity: ActivityState::default(),
             config_state: ConfigState::default(),
             export_state: ExportState::default(),
-            banner_dismiss_tick: Some(10),
+            banner_dismiss_tick: Some(30),
             pending_bell: false,
             processing_started: false,
             backend_cmd_tx: None,
@@ -347,6 +347,22 @@ impl App {
         self.activity = ActivityState::default();
         self.throughput_since_last = 0;
         self.last_throughput_tick = self.tick;
+
+        // Reset all paper/ref state to avoid double-counting on restart
+        for paper in &mut self.papers {
+            paper.phase = PaperPhase::Queued;
+            paper.total_refs = 0;
+            paper.stats = hallucinator_core::CheckStats::default();
+            paper.results.clear();
+            paper.error = None;
+        }
+        for rs in &mut self.ref_states {
+            rs.clear();
+        }
+        for pr in &mut self.paper_refs {
+            pr.clear();
+        }
+
         if let Some(tx) = &self.backend_cmd_tx {
             let config = self.build_config();
             let _ = tx.send(BackendCommand::ProcessFiles {
@@ -482,7 +498,7 @@ impl App {
                     self.tick = self.tick.wrapping_add(1);
                 }
                 Action::Resize(_w, h) => {
-                    self.visible_rows = (h as usize).saturating_sub(6);
+                    self.visible_rows = (h as usize).saturating_sub(11);
                 }
                 _ => {}
             }
@@ -505,7 +521,7 @@ impl App {
                     }
                 }
                 Action::Resize(_w, h) => {
-                    self.visible_rows = (h as usize).saturating_sub(6);
+                    self.visible_rows = (h as usize).saturating_sub(11);
                 }
                 _ => {
                     self.dismiss_banner();
@@ -573,7 +589,7 @@ impl App {
                     self.tick = self.tick.wrapping_add(1);
                 }
                 Action::Resize(_w, h) => {
-                    self.visible_rows = (h as usize).saturating_sub(6);
+                    self.visible_rows = (h as usize).saturating_sub(11);
                 }
                 _ => {}
             }
@@ -893,7 +909,7 @@ impl App {
                 }
             }
             Action::Resize(_w, h) => {
-                self.visible_rows = (h as usize).saturating_sub(6);
+                self.visible_rows = (h as usize).saturating_sub(11);
             }
             Action::None => {}
         }
@@ -1229,19 +1245,22 @@ impl App {
             return;
         }
 
+        // Persistent logo bar at top of every content screen
+        let content_area = crate::view::banner::render_logo_bar(f, area, &self.theme, self.tick);
+
         // Activity panel split
         let main_area = if self.activity_panel_visible {
-            let panel_width = if area.width > 120 { 45 } else { (area.width / 3).max(30) };
+            let panel_width = if content_area.width > 120 { 45 } else { (content_area.width / 3).max(30) };
             let chunks = Layout::horizontal([
                 Constraint::Min(40),
                 Constraint::Length(panel_width),
             ])
-            .split(area);
+            .split(content_area);
 
             crate::view::activity::render(f, chunks[1], self);
             chunks[0]
         } else {
-            area
+            content_area
         };
 
         // Clone screen to avoid borrow conflict with &mut self
