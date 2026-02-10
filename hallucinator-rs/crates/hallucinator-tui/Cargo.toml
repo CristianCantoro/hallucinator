@@ -1,0 +1,21 @@
+[package]
+name = "hallucinator-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ratatui-based terminal UI for batch hallucinated reference detection"
+
+[[bin]]
+name = "hallucinator-tui"
+path = "src/main.rs"
+
+[dependencies]
+hallucinator-core.workspace = true
+hallucinator-pdf.workspace = true
+hallucinator-dblp.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+dotenvy.workspace = true
+ratatui.workspace = true

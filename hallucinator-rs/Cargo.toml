@@ -6,6 +6,7 @@ members = [
     "crates/hallucinator-dblp",
     "crates/hallucinator-cli",
     "crates/hallucinator-web",
+    "crates/hallucinator-tui",
 ]
 
 [workspace.package]
@@ -73,6 +74,9 @@ tempfile = "3"
 
 # Channels
 async-channel = "2"
+
+# TUI
+ratatui = "0.29"
 
 # Error handling
 thiserror = "2"
