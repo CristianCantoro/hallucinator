@@ -1453,9 +1453,11 @@ impl App {
                         status,
                         DbStatus::Match | DbStatus::NoMatch | DbStatus::AuthorMismatch
                     );
+                    let is_match = status == DbStatus::Match;
                     self.activity.record_db_complete(
                         &db_name,
                         success,
+                        is_match,
                         elapsed.as_secs_f64() * 1000.0,
                     );
 
