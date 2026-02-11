@@ -38,7 +38,7 @@ pub async fn query_all_databases(
     // Build the list of databases to query
     let databases: Vec<Arc<dyn DatabaseBackend>> = build_database_list(config, only_dbs)
         .into_iter()
-        .map(|b| Arc::from(b))
+        .map(Arc::from)
         .collect();
 
     if databases.is_empty() {
@@ -247,9 +247,11 @@ fn build_database_list(
             api_key: config.s2_api_key.clone(),
         }));
     }
-    if should_include("SSRN") {
-        databases.push(Box::new(ssrn::Ssrn));
-    }
+    // SSRN disabled: papers.ssrn.com blocks automated requests (403/Cloudflare).
+    // Most SSRN papers are indexed by OpenAlex and CrossRef anyway.
+    // if should_include("SSRN") {
+    //     databases.push(Box::new(ssrn::Ssrn));
+    // }
     if should_include("ACL Anthology") {
         // Use offline ACL if available, otherwise online (scraping)
         if let Some(ref db) = config.acl_offline_db {
