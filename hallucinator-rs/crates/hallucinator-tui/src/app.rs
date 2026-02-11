@@ -635,7 +635,7 @@ impl App {
                 }
                 Ok(ArchiveItem::Done { total }) => {
                     self.activity.log(format!(
-                        "Extracted {} PDF{} from {}",
+                        "Extracted {} file{} from {}",
                         total,
                         if total == 1 { "" } else { "s" },
                         archive_name,
