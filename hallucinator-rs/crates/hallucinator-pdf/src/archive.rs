@@ -35,6 +35,22 @@ pub fn is_archive_path(path: &Path) -> bool {
     name.ends_with(".zip") || name.ends_with(".tar.gz") || name.ends_with(".tgz")
 }
 
+/// Returns true if the filename is a supported extractable type (PDF or BBL).
+fn is_extractable(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".pdf") || lower.ends_with(".bbl")
+}
+
+/// Returns true if the file content looks valid for its extension.
+/// PDFs must start with `%PDF-`; BBL files are plain text and skip the check.
+fn passes_magic_check(name: &str, data: &[u8]) -> bool {
+    if name.to_lowercase().ends_with(".pdf") {
+        data.starts_with(b"%PDF-")
+    } else {
+        true // .bbl files are plain text, no magic bytes to check
+    }
+}
+
 /// Read an archive file from disk, detect its type, and extract PDFs into `dir`.
 ///
 /// Supports ZIP and tar.gz archives. Type is detected by extension and magic bytes.
@@ -108,8 +124,8 @@ pub fn extract_from_zip(
             continue;
         }
 
-        // Only process PDFs
-        if !name_str.to_lowercase().ends_with(".pdf") {
+        // Only process PDFs and BBL files
+        if !is_extractable(&name_str) {
             continue;
         }
 
@@ -118,7 +134,7 @@ pub fn extract_from_zip(
             total_size += file.size();
             if total_size > max_size {
                 warnings.push(format!(
-                    "Size limit ({}MB) reached after {} PDFs, skipping remaining files",
+                    "Size limit ({}MB) reached after {} files, skipping remaining",
                     max_size / 1024 / 1024,
                     pdfs.len()
                 ));
@@ -139,8 +155,8 @@ pub fn extract_from_zip(
         file.read_to_end(&mut buf)
             .map_err(|e| format!("Failed to extract {}: {}", name_str, e))?;
 
-        // Verify PDF magic bytes
-        if !buf.starts_with(b"%PDF-") {
+        // Verify magic bytes (PDFs only)
+        if !passes_magic_check(&name_str, &buf) {
             continue;
         }
 
@@ -154,7 +170,7 @@ pub fn extract_from_zip(
     }
 
     if pdfs.is_empty() {
-        return Err("No PDF files found in archive".to_string());
+        return Err("No PDF or BBL files found in archive".to_string());
     }
 
     Ok(ExtractionResult { pdfs, warnings })
@@ -205,8 +221,8 @@ pub fn extract_from_tar_gz(
             continue;
         }
 
-        // Only process PDFs
-        if !name_str.to_lowercase().ends_with(".pdf") {
+        // Only process PDFs and BBL files
+        if !is_extractable(&name_str) {
             continue;
         }
 
@@ -215,7 +231,7 @@ pub fn extract_from_tar_gz(
             total_size += entry.size();
             if total_size > max_size {
                 warnings.push(format!(
-                    "Size limit ({}MB) reached after {} PDFs, skipping remaining files",
+                    "Size limit ({}MB) reached after {} files, skipping remaining",
                     max_size / 1024 / 1024,
                     pdfs.len()
                 ));
@@ -237,8 +253,8 @@ pub fn extract_from_tar_gz(
             .read_to_end(&mut buf)
             .map_err(|e| format!("Failed to extract {}: {}", name_str, e))?;
 
-        // Verify PDF magic bytes
-        if !buf.starts_with(b"%PDF-") {
+        // Verify magic bytes (PDFs only)
+        if !passes_magic_check(&name_str, &buf) {
             continue;
         }
 
@@ -252,13 +268,13 @@ pub fn extract_from_tar_gz(
     }
 
     if pdfs.is_empty() {
-        return Err("No PDF files found in archive".to_string());
+        return Err("No PDF or BBL files found in archive".to_string());
     }
 
     Ok(ExtractionResult { pdfs, warnings })
 }
 
-/// Stream-extract PDFs from an archive, sending each one through `tx` as it's extracted.
+/// Stream-extract PDFs and BBL files from an archive, sending each one through `tx` as it's extracted.
 ///
 /// This is the streaming counterpart of [`extract_archive`]. Instead of collecting all
 /// PDFs into a Vec, each extracted PDF is sent immediately via the channel so the caller
@@ -290,7 +306,7 @@ pub fn extract_archive_streaming(
     }
 }
 
-/// Streaming ZIP extraction — sends each PDF through the channel as it's extracted.
+/// Streaming ZIP extraction — sends each file through the channel as it's extracted.
 fn extract_from_zip_streaming(
     data: &[u8],
     dir: &Path,
@@ -328,7 +344,7 @@ fn extract_from_zip_streaming(
         {
             continue;
         }
-        if !name_str.to_lowercase().ends_with(".pdf") {
+        if !is_extractable(&name_str) {
             continue;
         }
 
@@ -336,7 +352,7 @@ fn extract_from_zip_streaming(
             total_size += file.size();
             if total_size > max_size {
                 let _ = tx.send(ArchiveItem::Warning(format!(
-                    "Size limit ({}MB) reached after {} PDFs, skipping remaining files",
+                    "Size limit ({}MB) reached after {} files, skipping remaining",
                     max_size / 1024 / 1024,
                     total
                 )));
@@ -356,7 +372,7 @@ fn extract_from_zip_streaming(
         file.read_to_end(&mut buf)
             .map_err(|e| format!("Failed to extract {}: {}", name_str, e))?;
 
-        if !buf.starts_with(b"%PDF-") {
+        if !passes_magic_check(&name_str, &buf) {
             continue;
         }
 
@@ -376,14 +392,14 @@ fn extract_from_zip_streaming(
     }
 
     if total == 0 {
-        return Err("No PDF files found in archive".to_string());
+        return Err("No PDF or BBL files found in archive".to_string());
     }
 
     let _ = tx.send(ArchiveItem::Done { total });
     Ok(())
 }
 
-/// Streaming tar.gz extraction — sends each PDF through the channel as it's extracted.
+/// Streaming tar.gz extraction — sends each file through the channel as it's extracted.
 fn extract_from_tar_gz_streaming(
     data: &[u8],
     dir: &Path,
@@ -424,7 +440,7 @@ fn extract_from_tar_gz_streaming(
         {
             continue;
         }
-        if !name_str.to_lowercase().ends_with(".pdf") {
+        if !is_extractable(&name_str) {
             continue;
         }
 
@@ -432,7 +448,7 @@ fn extract_from_tar_gz_streaming(
             total_size += entry.size();
             if total_size > max_size {
                 let _ = tx.send(ArchiveItem::Warning(format!(
-                    "Size limit ({}MB) reached after {} PDFs, skipping remaining files",
+                    "Size limit ({}MB) reached after {} files, skipping remaining",
                     max_size / 1024 / 1024,
                     total
                 )));
@@ -453,7 +469,7 @@ fn extract_from_tar_gz_streaming(
             .read_to_end(&mut buf)
             .map_err(|e| format!("Failed to extract {}: {}", name_str, e))?;
 
-        if !buf.starts_with(b"%PDF-") {
+        if !passes_magic_check(&name_str, &buf) {
             continue;
         }
 
@@ -473,7 +489,7 @@ fn extract_from_tar_gz_streaming(
     }
 
     if total == 0 {
-        return Err("No PDF files found in archive".to_string());
+        return Err("No PDF or BBL files found in archive".to_string());
     }
 
     let _ = tx.send(ArchiveItem::Done { total });
