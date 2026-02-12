@@ -53,17 +53,17 @@ jobs:
 
       - name: Create venv and install deps
         run: |
-          uv venv .venv
-          source .venv/bin/activate
+          uv venv $GITHUB_WORKSPACE/.venv
+          source $GITHUB_WORKSPACE/.venv/bin/activate
           uv pip install pytest maturin
 
       - name: Build + install bindings
         run: |
-          source .venv/bin/activate
+          source $GITHUB_WORKSPACE/.venv/bin/activate
           maturin develop --release
         working-directory: hallucinator-rs
 
       - name: Run tests
         run: |
-          source .venv/bin/activate
+          source $GITHUB_WORKSPACE/.venv/bin/activate
           pytest hallucinator-rs/tests/ -m "not network" -v
