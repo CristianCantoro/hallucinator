@@ -7,7 +7,7 @@ identifies parsing failures, and helps improve the extraction pipeline.
 
 Uses the hallucinator Rust bindings (hallucinator-rs) for PDF extraction
 instead of the Python implementation. Install with:
-    cd hallucinator-rs && pip install -e .
+    pip install --pre hallucinator
 
 Usage:
     python evaluate_parsing_rs.py /path/to/downloads           # Basic usage
@@ -44,8 +44,8 @@ try:
 except ImportError:
     print(
         "Error: hallucinator Python bindings not installed.\n"
-        "Install with: cd hallucinator-rs && pip install -e .\n"
-        "Or: cd hallucinator-rs && maturin develop --release",
+        "Install with: pip install --pre hallucinator\n"
+        "Or from source: cd hallucinator-rs && maturin develop --release",
         file=sys.stderr,
     )
     sys.exit(1)
