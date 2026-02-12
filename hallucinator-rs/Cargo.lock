@@ -1185,8 +1185,13 @@ dependencies = [
 name = "hallucinator-python"
 version = "0.1.0"
 dependencies = [
+ "hallucinator-acl",
+ "hallucinator-core",
+ "hallucinator-dblp",
  "hallucinator-pdf",
  "pyo3",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

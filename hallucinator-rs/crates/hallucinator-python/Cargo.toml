@@ -15,4 +15,9 @@ pdf = ["hallucinator-pdf/pdf"]
 
 [dependencies]
 hallucinator-pdf = { workspace = true }
+hallucinator-core = { workspace = true }
+hallucinator-dblp = { workspace = true }
+hallucinator-acl = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio-util = { workspace = true }
 pyo3 = { workspace = true }

@@ -2,9 +2,18 @@
 
 from typing import Callable, Optional
 
+from hallucinator._native import ArxivInfo as ArxivInfo
+from hallucinator._native import CheckStats as CheckStats
+from hallucinator._native import DbResult as DbResult
+from hallucinator._native import DoiInfo as DoiInfo
 from hallucinator._native import ExtractionResult as ExtractionResult
+from hallucinator._native import ProgressEvent as ProgressEvent
 from hallucinator._native import Reference as Reference
+from hallucinator._native import RetractionInfo as RetractionInfo
 from hallucinator._native import SkipStats as SkipStats
+from hallucinator._native import ValidationResult as ValidationResult
+from hallucinator._native import Validator as Validator
+from hallucinator._native import ValidatorConfig as ValidatorConfig
 
 class PdfExtractor:
     """A configurable PDF reference extractor with custom strategy support.

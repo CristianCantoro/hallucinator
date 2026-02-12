@@ -1,8 +1,9 @@
-"""Hallucinator PDF reference extraction library.
+"""Hallucinator PDF reference extraction and validation library.
 
 Provides a configurable pipeline for extracting and parsing academic
-references from PDF documents. Custom segmentation strategies can be
-registered to handle non-standard reference formats.
+references from PDF documents, and validating them against academic
+databases. Custom segmentation strategies can be registered to handle
+non-standard reference formats.
 """
 
 from hallucinator._native import (
@@ -10,9 +11,35 @@ from hallucinator._native import (
     Reference,
     ExtractionResult,
     SkipStats,
+    # Validation pipeline
+    ValidatorConfig,
+    Validator,
+    ValidationResult,
+    DbResult,
+    DoiInfo,
+    ArxivInfo,
+    RetractionInfo,
+    ProgressEvent,
+    CheckStats,
 )
 
-__all__ = ["PdfExtractor", "Reference", "ExtractionResult", "SkipStats"]
+__all__ = [
+    # PDF extraction
+    "PdfExtractor",
+    "Reference",
+    "ExtractionResult",
+    "SkipStats",
+    # Validation pipeline
+    "Validator",
+    "ValidatorConfig",
+    "ValidationResult",
+    "DbResult",
+    "DoiInfo",
+    "ArxivInfo",
+    "RetractionInfo",
+    "ProgressEvent",
+    "CheckStats",
+]
 
 
 class PdfExtractor:
