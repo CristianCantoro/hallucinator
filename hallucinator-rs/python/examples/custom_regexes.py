@@ -141,6 +141,61 @@ def german_appendix_cutoff():
     print()
 
 
+def custom_callable_strategy():
+    """Use a Python callable to handle parenthesized reference numbering.
+
+    Some papers use (1), (2) instead of [1], [2]. A regex override won't
+    help if the format is sufficiently unusual — but a Python callable can
+    implement arbitrary splitting logic.
+    """
+    import re
+
+    print("-- Custom callable segmentation strategy --")
+    ext = PdfExtractor()
+
+    def paren_segmenter(text: str) -> list[str] | None:
+        """Split references numbered with parenthesized digits: (1), (2), ..."""
+        parts = re.split(r"\n\s*\(\d+\)\s+", text)
+        parts = [p.strip() for p in parts if p.strip()]
+        return parts if len(parts) >= 3 else None
+
+    ext.add_segmentation_strategy(paren_segmenter)
+
+    text = (
+        "Body of the paper.\n\n"
+        "References\n\n"
+        '(1) García, A. "A Novel Approach to Detecting Hallucinated References." '
+        "Proc. IEEE, 2023.\n"
+        '(2) López, B. "Machine Learning Methods for Citation Verification." '
+        "Proc. AAAI, 2022.\n"
+        '(3) Martínez, C. "Computational Approaches to Bibliographic Validation." '
+        "Proc. ACL, 2021.\n"
+    )
+
+    result = ext.extract_from_text(text)
+    print(f"  Found {len(result)} references (via custom callable)")
+    for ref in result.references:
+        print(f"    - {ref.title}")
+
+    # The callable is tried first; if it returns None, Rust built-ins take over
+    ext2 = PdfExtractor()
+    ext2.add_segmentation_strategy(paren_segmenter)
+
+    ieee_text = (
+        "Body.\n\nReferences\n\n"
+        '[1] Smith, J. "A Paper Using Standard IEEE Bracketed Numbering." '
+        "Proc. IEEE, 2023.\n"
+        '[2] Jones, A. "Another Paper With Normal Reference Formatting." '
+        "Proc. AAAI, 2022.\n"
+        '[3] Brown, C. "A Third Paper on Natural Language Processing." '
+        "Proc. ACL, 2021.\n"
+    )
+
+    result2 = ext2.extract_from_text(ieee_text)
+    print(f"  Fallback to Rust: found {len(result2)} references")
+    print()
+
+
 if __name__ == "__main__":
     spanish_paper_example()
     curly_bracket_segmentation()
@@ -148,4 +203,5 @@ if __name__ == "__main__":
     compound_hyphenation()
     limit_authors()
     german_appendix_cutoff()
+    custom_callable_strategy()
     print("All examples ran successfully.")

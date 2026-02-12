@@ -1,8 +1,9 @@
-"""Tests for the hallucinator Python bindings (Phase 1: PDF extraction)."""
+"""Tests for the hallucinator Python bindings (Phases 1–2A: PDF extraction + custom strategies)."""
 
 import pytest
 
 from hallucinator import PdfExtractor, Reference, ExtractionResult, SkipStats
+from hallucinator._native import NativePdfExtractor
 
 
 # ── Construction ──
@@ -260,3 +261,202 @@ def test_invalid_regex_raises():
     ext.section_header_regex = r"[invalid"
     with pytest.raises(ValueError, match="Invalid regex"):
         ext.find_section("anything")
+
+
+# ── Native class access ──
+
+
+def test_native_extractor_accessible():
+    native = NativePdfExtractor()
+    assert repr(native) == "NativePdfExtractor(...)"
+
+
+# ── Custom segmentation strategies ──
+
+
+IEEE_TEXT = (
+    "Body text.\n\nReferences\n"
+    "42\n"
+    '[1] J. Smith, "Detecting Fake References in Academic Papers," '
+    "in Proc. IEEE, 2023.\n"
+    '[2] A. Brown, "Another Important Paper on Machine Learning," '
+    "in Proc. AAAI, 2022.\n"
+    '[3] C. Wilson, "A Third Paper About NLP Systems," '
+    "in Proc. ACL, 2021.\n"
+)
+
+
+def test_add_custom_strategy_runs_first():
+    """A custom strategy that returns segments is used instead of Rust built-ins."""
+    ext = PdfExtractor()
+
+    custom_segments = [
+        'J. Smith, "Custom Parsed Reference One About Academic Systems," Proc. IEEE, 2023.',
+        'A. Brown, "Custom Parsed Reference Two About Machine Learning," Proc. AAAI, 2022.',
+        'C. Wilson, "Custom Parsed Reference Three About NLP Methods," Proc. ACL, 2021.',
+    ]
+
+    def custom_strategy(text):
+        return custom_segments
+
+    ext.add_segmentation_strategy(custom_strategy)
+    segments = ext.segment("any text")
+    assert segments == custom_segments
+
+
+def test_custom_strategy_fallthrough():
+    """A strategy returning None falls through to Rust built-ins."""
+    ext = PdfExtractor()
+
+    def returns_none(text):
+        return None
+
+    ext.add_segmentation_strategy(returns_none)
+    segs = ext.segment("\n[1] First ref.\n[2] Second ref.\n[3] Third ref.\n")
+    assert len(segs) == 3  # Rust built-in IEEE strategy handles it
+
+
+def test_custom_strategy_with_extract_from_text():
+    """Full pipeline uses custom strategy when registered."""
+    ext = PdfExtractor()
+    call_count = 0
+
+    def paren_strategy(text):
+        nonlocal call_count
+        call_count += 1
+        # Split by parenthesized numbers
+        import re
+        parts = re.split(r'\n\s*\(\d+\)\s+', text)
+        parts = [p.strip() for p in parts if p.strip()]
+        return parts if len(parts) >= 3 else None
+
+    ext.add_segmentation_strategy(paren_strategy)
+
+    text = (
+        "Body text.\n\nReferences\n\n"
+        '(1) J. Smith, "Detecting Fake References in Academic Papers," '
+        "in Proc. IEEE, 2023.\n"
+        '(2) A. Brown, "Another Important Paper on Machine Learning," '
+        "in Proc. AAAI, 2022.\n"
+        '(3) C. Wilson, "A Third Paper About Natural Language Processing," '
+        "in Proc. ACL, 2021.\n"
+    )
+
+    result = ext.extract_from_text(text)
+    assert call_count >= 1
+    assert isinstance(result, ExtractionResult)
+    assert len(result) >= 2  # some refs should parse
+
+
+def test_clear_strategies():
+    """After clearing, fast path is restored."""
+    ext = PdfExtractor()
+
+    def custom(text):
+        return ["a", "b", "c"]
+
+    ext.add_segmentation_strategy(custom)
+    assert repr(ext) == "PdfExtractor(custom_strategies=1)"
+
+    ext.clear_segmentation_strategies()
+    assert repr(ext) == "PdfExtractor(...)"
+
+    # Now extract_from_text delegates to Rust (fast path)
+    result = ext.extract_from_text(IEEE_TEXT)
+    assert isinstance(result, ExtractionResult)
+    assert len(result) == 3
+
+
+def test_multiple_strategies_priority_order():
+    """First matching callable wins; later ones are not called."""
+    ext = PdfExtractor()
+    calls = []
+
+    def first(text):
+        calls.append("first")
+        return None  # fall through
+
+    def second(text):
+        calls.append("second")
+        return ["seg1", "seg2", "seg3"]
+
+    def third(text):
+        calls.append("third")
+        return ["other1", "other2", "other3"]
+
+    ext.add_segmentation_strategy(first)
+    ext.add_segmentation_strategy(second)
+    ext.add_segmentation_strategy(third)
+
+    result = ext.segment("any text")
+    assert result == ["seg1", "seg2", "seg3"]
+    assert calls == ["first", "second"]  # third never called
+
+
+def test_custom_strategy_exception_propagates():
+    """If a custom strategy raises, the exception propagates to the caller."""
+    ext = PdfExtractor()
+
+    def bad_strategy(text):
+        raise RuntimeError("strategy failed")
+
+    ext.add_segmentation_strategy(bad_strategy)
+    with pytest.raises(RuntimeError, match="strategy failed"):
+        ext.segment("any text")
+
+
+def test_custom_strategy_too_few_results_falls_through():
+    """A strategy returning fewer than 3 items is treated as non-matching."""
+    ext = PdfExtractor()
+
+    def returns_two(text):
+        return ["a", "b"]
+
+    ext.add_segmentation_strategy(returns_two)
+    segs = ext.segment("\n[1] First ref.\n[2] Second ref.\n[3] Third ref.\n")
+    assert len(segs) == 3  # fell through to Rust
+
+
+def test_parse_reference_detailed():
+    """parse_reference_detailed returns (ref, None) or (None, reason)."""
+    ext = PdfExtractor()
+
+    # Successful parse
+    ref, reason = ext._native.parse_reference_detailed(
+        'J. Smith, "Detecting Fake References in Academic Papers," '
+        "in Proc. IEEE, 2023."
+    )
+    assert ref is not None
+    assert reason is None
+    assert "Detecting Fake References" in ref.title
+
+    # URL-only skip
+    ref, reason = ext._native.parse_reference_detailed(
+        "See https://github.com/some/repo for details."
+    )
+    assert ref is None
+    assert reason == "url_only"
+
+    # Short title skip
+    ref, reason = ext._native.parse_reference_detailed(
+        'J. Smith, "Short Title," in Proc. IEEE, 2023.'
+    )
+    assert ref is None
+    assert reason == "short_title"
+
+
+def test_extraction_result_from_parts():
+    """ExtractionResult._from_parts() constructs a valid result."""
+    ext = PdfExtractor()
+    ref = ext.parse_reference(
+        'J. Smith, "Detecting Fake References in Academic Papers," '
+        "in Proc. IEEE, 2023."
+    )
+    assert ref is not None
+
+    result = ExtractionResult._from_parts([ref], 5, 1, 1, 0, 0)
+    assert len(result) == 1
+    assert result.skip_stats.total_raw == 5
+    assert result.skip_stats.url_only == 1
+    assert result.skip_stats.short_title == 1
+    assert result.references[0].title == ref.title

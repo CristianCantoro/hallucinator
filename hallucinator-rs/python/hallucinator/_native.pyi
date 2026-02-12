@@ -39,18 +39,21 @@ class ExtractionResult:
     def skip_stats(self) -> SkipStats: ...
     def __len__(self) -> int: ...
 
-class PdfExtractor:
-    """A configurable PDF reference extractor.
+    @staticmethod
+    def _from_parts(
+        refs: list[Reference],
+        total_raw: int,
+        url_only: int,
+        short_title: int,
+        no_title: int,
+        no_authors: int,
+    ) -> "ExtractionResult": ...
 
-    Set properties to customize regex patterns and thresholds, then call
-    extraction methods.
+class NativePdfExtractor:
+    """The native Rust PDF reference extractor.
 
-    Example::
-
-        ext = PdfExtractor()
-        ext.section_header_regex = r"(?i)\\n\\s*Bibliografía\\s*\\n"
-        ext.min_title_words = 3
-        result = ext.extract("paper.pdf")
+    Prefer using ``hallucinator.PdfExtractor`` which wraps this class
+    and adds support for custom Python segmentation strategies.
     """
 
     def __init__(self) -> None: ...
@@ -80,4 +83,7 @@ class PdfExtractor:
     def parse_reference(
         self, text: str, prev_authors: Optional[list[str]] = None
     ) -> Optional[Reference]: ...
+    def parse_reference_detailed(
+        self, text: str, prev_authors: Optional[list[str]] = None
+    ) -> tuple[Optional[Reference], Optional[str]]: ...
     def extract_from_text(self, text: str) -> ExtractionResult: ...

@@ -15,6 +15,12 @@ impl From<Reference> for PyReference {
     }
 }
 
+impl PyReference {
+    pub fn into_inner(self) -> Reference {
+        self.inner
+    }
+}
+
 #[pymethods]
 impl PyReference {
     /// The raw citation text (cleaned up for display).
@@ -144,6 +150,32 @@ impl PyExtractionResult {
     #[getter]
     fn skip_stats(&self) -> PySkipStats {
         PySkipStats::from(self.inner.skip_stats.clone())
+    }
+
+    /// Construct an ExtractionResult from parts (used by the Python wrapper).
+    #[staticmethod]
+    fn _from_parts(
+        refs: Vec<PyReference>,
+        total_raw: usize,
+        url_only: usize,
+        short_title: usize,
+        no_title: usize,
+        no_authors: usize,
+    ) -> Self {
+        let references = refs.into_iter().map(|r| r.into_inner()).collect();
+        let skip_stats = SkipStats {
+            total_raw,
+            url_only,
+            short_title,
+            no_title,
+            no_authors,
+        };
+        Self {
+            inner: ExtractionResult {
+                references,
+                skip_stats,
+            },
+        }
     }
 
     fn __repr__(&self) -> String {

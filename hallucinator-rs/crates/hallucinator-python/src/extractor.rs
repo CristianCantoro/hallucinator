@@ -22,7 +22,7 @@ use crate::types::{PyExtractionResult, PyReference};
 ///     ext.min_title_words = 3
 ///     result = ext.extract("paper.pdf")
 ///
-#[pyclass(name = "PdfExtractor")]
+#[pyclass(name = "NativePdfExtractor")]
 pub struct PyPdfExtractor {
     builder: PdfParsingConfigBuilder,
     cached: Option<PdfExtractor>,
@@ -214,6 +214,33 @@ impl PyPdfExtractor {
         }
     }
 
+    /// Parse a single reference string, returning skip reason if skipped.
+    ///
+    /// Returns `(Reference, None)` on success or `(None, reason)` on skip.
+    /// `reason` is `"url_only"` or `"short_title"`.
+    #[pyo3(signature = (text, prev_authors=None))]
+    fn parse_reference_detailed(
+        &mut self,
+        text: &str,
+        prev_authors: Option<Vec<String>>,
+    ) -> PyResult<(Option<PyReference>, Option<String>)> {
+        let ext = self.extractor()?;
+        let prev = prev_authors.unwrap_or_default();
+        let parsed = ext.parse_reference(text, &prev);
+        match parsed {
+            hallucinator_pdf::extractor::ParsedRef::Ref(r) => {
+                Ok((Some(PyReference::from(r)), None))
+            }
+            hallucinator_pdf::extractor::ParsedRef::Skip(reason) => {
+                let reason_str = match reason {
+                    hallucinator_pdf::extractor::SkipReason::UrlOnly => "url_only",
+                    hallucinator_pdf::extractor::SkipReason::ShortTitle => "short_title",
+                };
+                Ok((None, Some(reason_str.to_string())))
+            }
+        }
+    }
+
     /// Run extraction on already-extracted text (steps 2–4).
     ///
     /// Useful when you've already extracted text and want to re-parse
@@ -227,6 +254,6 @@ impl PyPdfExtractor {
     }
 
     fn __repr__(&self) -> String {
-        "PdfExtractor(...)".to_string()
+        "NativePdfExtractor(...)".to_string()
     }
 }
