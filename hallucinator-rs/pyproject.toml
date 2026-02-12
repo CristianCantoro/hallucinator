@@ -8,6 +8,25 @@ version = "0.1.0"
 description = "Detect hallucinated references in academic papers"
 requires-python = ">=3.9"
 license = "AGPL-3.0-or-later"
+readme = "README.md"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage = "https://github.com/gianlucasb/hallucinator"
+Repository = "https://github.com/gianlucasb/hallucinator"
+Issues = "https://github.com/gianlucasb/hallucinator/issues"
 
 [tool.maturin]
 manifest-path = "crates/hallucinator-python/Cargo.toml"
