@@ -114,6 +114,10 @@ def normalize_title(title):
     import html
     title = html.unescape(str(title))  # Decode HTML entities like &quot;
     title = unicodedata.normalize("NFKD", title)
+    # Handle mathematical symbols that would otherwise be stripped
+    # H∞ (H-infinity) is common in control theory papers
+    title = title.replace('∞', 'infinity')
+    title = title.replace('∞', 'infinity')  # Alternative infinity symbol
     # Keep only Unicode letters and numbers, remove everything else including spaces
     title = ''.join(c for c in title if c.isalnum())
     return title.lower()
@@ -1245,6 +1249,11 @@ def clean_title(title, from_quotes=False):
     if q_journal_match:
         title = title[:q_journal_match.start() + 1]  # Keep the ?/!
 
+    # Handle "? Automatica 34" or "? IEEE Trans... 53" patterns (journal + volume without comma)
+    q_journal_vol_match = re.search(r'[?!]\s+(?:IEEE\s+Trans[a-z.]*|ACM\s+Trans[a-z.]*|Automatica|J\.\s*[A-Z][a-z]+|[A-Z][a-z]+\.?\s+[A-Z][a-z]+\.?)\s+\d+\s*\(', title)
+    if q_journal_vol_match:
+        title = title[:q_journal_vol_match.start() + 1]  # Keep the ?/!
+
     # Remove trailing journal/venue info that might have been included
     cutoff_patterns = [
         r'\.\s*[Ii]n:\s+[A-Z].*$',  # Elsevier ". In: Proceedings" or ". In: IFIP"
@@ -1378,6 +1387,13 @@ def extract_title_from_reference(ref_text):
     ref_text = fix_hyphenation(ref_text)
     ref_text = re.sub(r'\s+', ' ', ref_text).strip()
 
+    # === General preprocessing ===
+    # Strip reference number prefixes like "[1]", "[23]", "1.", "23."
+    ref_text = re.sub(r'^\[\d+\]\s*', '', ref_text)
+    ref_text = re.sub(r'^\d+\.\s*', '', ref_text)
+    # Strip leading punctuation artifacts (sometimes references start with stray period)
+    ref_text = ref_text.lstrip('. ')
+
     # === Math paper preprocessing ===
     # Strip MathReview numbers (e.g., "MR4870047" or "MR 4870047")
     ref_text = re.sub(r'\bMR\s*\d{5,}', '', ref_text)
@@ -1406,7 +1422,8 @@ def extract_title_from_reference(ref_text):
             # IEEE format: comma inside quotes ("Title,") means title is complete
             # What follows is venue/journal, not a subtitle - skip subtitle detection
             if quoted_part.endswith(','):
-                if len(quoted_part.split()) >= 3:
+                # Quoted titles can be shorter (2 words) - quotes are a strong indicator
+                if len(quoted_part.split()) >= 2:
                     return quoted_part, True
                 continue  # Try next quote pattern
 
@@ -1418,8 +1435,12 @@ def extract_title_from_reference(ref_text):
                 if after_quote[0] in ':-':
                     subtitle_text = after_quote[1:].strip()
                 elif after_quote[0].isupper():
-                    # Subtitle starts directly with capital letter (no delimiter)
-                    subtitle_text = after_quote
+                    # Check if it's a venue/journal (not a subtitle)
+                    # Common venue starters that should NOT be treated as subtitles
+                    venue_starters = r'^(?:IEEE|ACM|USENIX|In\s+|Proc|Trans|Journal|Conference|Workshop|Symposium|vol\.|pp\.)'
+                    if not re.match(venue_starters, after_quote, re.IGNORECASE):
+                        # Subtitle starts directly with capital letter (no delimiter)
+                        subtitle_text = after_quote
 
                 if subtitle_text:
                     # Find where subtitle ends at venue/year markers
@@ -1526,6 +1547,9 @@ def extract_title_from_reference(ref_text):
             r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014]+\d+:\d+',  # ". Journal Name 34:123" - journal with pages
             r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]+,\s*\d+',  # ". Journal Name, 11" or ". PACM-HCI, 4"
             r'[?!]\s+[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]+,\s*\d+\s*[(:]',  # "? Journal Name, vol(" - cut after ?/!
+            r'[?!]\s+[A-Z][a-z]+\s+(?:[A-Z][a-z]+\s+)?\d+\(',  # "? Journal 26(" - journal with volume
+            r'[?!]\s+[A-Z][a-z]+\s+[a-z]+\s',  # "? Word word " - likely journal after question
+            r'\s+\[',  # " [" - editorial note like "[Reprinted...]"
             r'\.\s*https?://',  # URL follows title
             r'\.\s*URL\s+',  # URL follows title
             r'\.\s*Tech\.\s*rep\.',  # Technical report
@@ -1558,6 +1582,8 @@ def extract_title_from_reference(ref_text):
             r'\.\s*(?:Proceedings|IEEE|ACM|USENIX|arXiv)',
             r'\.\s*[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]{10,},\s*\d+',  # ". Long Journal Name, vol" - long journal names
             r'[?!]\s+[A-Z][a-zA-Z\s&+\u00AE\u2013\u2014-]+,\s*\d+\s*[(:]',  # "? Journal Name, vol(" - cut after ?/!
+            r'[?!]\s+[A-Z][a-z]+\s+(?:[A-Z][a-z]+\s+)?\d+\(',  # "? Journal Name 26(" - journal with volume
+            r'[?!]\s+[A-Z][a-z]+\s+[a-z]+\s',  # "? Word word " - likely journal after question
             r'\s+doi:',
             r'\s*\(\d+(?:st|nd|rd|th)?\s*ed\.?\)\.\s*[A-Z]',  # "(2nd ed.). Publisher" - book edition + publisher
         ]
@@ -1658,8 +1684,9 @@ def extract_title_from_reference(ref_text):
 
     # === Format 5: ALL CAPS authors (e.g., "SURNAME, F., AND SURNAME, G. Title here.") ===
     # Only triggers if text starts with a multi-char ALL CAPS surname (not just initials like "H. W.")
+    # Skip Chinese ALL CAPS format "SURNAME I, SURNAME I, et al." - handled by Format 8
     # Look for pattern: "SURNAME... [initial]. Title" where Title starts with capital
-    if re.match(r'^[A-Z]{2,}', ref_text):
+    if re.match(r'^[A-Z]{2,}', ref_text) and not re.search(r'^[A-Z]{2,}\s+[A-Z](?:,|\s)', ref_text):
         # Find title start: period-space-Capital followed by lowercase word
         # Handles both "A title..." and "Title..." patterns
         title_start_match = re.search(r'\.\s+([A-Z][a-z]*\s+[a-z])', ref_text)
@@ -1777,6 +1804,89 @@ def extract_title_from_reference(ref_text):
                     return title, False
 
             break
+
+    # === Format 7: APA/Harvard - "Surname, I., & Surname, I. (YYYY). Title." ===
+    # Pattern: Authors with ampersand, year in parentheses, then title
+    # Example: "Dennis, J. E., Jr., & Schnabel, R. B. (1996). Numerical methods..."
+    # Example: "Mignemi, G., & Manolopoulou, I. (2025). Bayesian nonparametric..."
+    apa_match = re.search(r'&\s+[A-Z][a-z-]+,\s+[A-Z]\..*?\((\d{4})\)\.\s+', ref_text)
+    if apa_match:
+        after_year = ref_text[apa_match.end():]
+        # Title ends at period followed by journal name or URL
+        title_end_patterns = [
+            r'\.\s+[A-Z][a-z]+(?:\s+[A-Z]?[a-z]+)*,?\s+\d+',  # ". Journal Name, vol" or ". Journal Name 26"
+            r'\.\s+[Ii]n\s+',  # ". In "
+            r'\.\s+(?:http|doi:|arXiv)',  # ". URL/DOI"
+            r'\.\s+[A-Z][a-z]+:',  # ". Publisher:"
+            r'\s+\[',  # " [" - editorial note like "[Originally published...]"
+            r'\.\s*$',  # End of string
+        ]
+        title_end = len(after_year)
+        for pattern in title_end_patterns:
+            m = re.search(pattern, after_year)
+            if m:
+                title_end = min(title_end, m.start())
+
+        title = after_year[:title_end].strip()
+        title = re.sub(r'\.\s*$', '', title)
+        if len(title.split()) >= 3:
+            return title, False
+
+    # === Format 8: ALL CAPS Chinese/Biomedical - "SURNAME I, SURNAME I, et al. Title" ===
+    # Pattern: All caps surnames with single-letter initials (Chinese biomedical style)
+    # Example: "CAO X, YANG B, WANG K, et al. Title of the paper. Journal 2024"
+    # Example: "LIU Z, SABERI A, et al. H∞ almost state synchronization..."
+    # Authors are ALL CAPS, followed by "et al." or sentence end, then title
+    all_caps_match = re.search(r'^([A-Z]{2,})\s+[A-Z](?:,|\s|$)', ref_text)
+    if all_caps_match:
+        # Find end of author list: "et al." or transition to non-caps content
+        et_al_match = re.search(r',?\s+et\s+al\.?\s*[,.]?\s*', ref_text, re.IGNORECASE)
+        if et_al_match:
+            after_authors = ref_text[et_al_match.end():].strip()
+        else:
+            # Find where ALL CAPS author pattern ends
+            # Pattern: "SURNAME X, SURNAME Y, Title starts here"
+            # Title typically starts with a sentence that has mixed case
+            parts = ref_text.split(', ')
+            title_start_idx = None
+            for i, part in enumerate(parts):
+                part = part.strip()
+                # Check if this looks like an ALL CAPS author (SURNAME X or just SURNAME)
+                if re.match(r'^[A-Z]{2,}(?:\s+[A-Z])?$', part):
+                    continue  # Still in author list
+                # Found non-author part - this is the title start
+                title_start_idx = i
+                break
+
+            if title_start_idx is not None:
+                after_authors = ', '.join(parts[title_start_idx:]).strip()
+            else:
+                after_authors = None
+
+        if after_authors:
+            # Find where title ends - at journal/year markers
+            title_end_patterns = [
+                r'\[J\]',  # Chinese citation marker for journal
+                r'\[C\]',  # Chinese citation marker for conference
+                r'\[M\]',  # Chinese citation marker for book
+                r'\[D\]',  # Chinese citation marker for dissertation
+                r'\.\s*[A-Z][a-zA-Z\s]+\d+\s*\(\d+\)',  # ". Journal Name 34(5)"
+                r'\.\s*[A-Z][a-zA-Z\s&+]+\d+:\d+',  # ". Journal 34:123"
+                r'\.\s*[A-Z][a-zA-Z\s&+]+,\s*\d+',  # ". Journal Name, vol"
+                r'\.\s*(?:19|20)\d{2}',  # ". 2024"
+                r'\.\s*https?://',
+                r'\.\s*doi:',
+            ]
+            title_end = len(after_authors)
+            for pattern in title_end_patterns:
+                m = re.search(pattern, after_authors)
+                if m:
+                    title_end = min(title_end, m.start())
+
+            title = after_authors[:title_end].strip()
+            title = re.sub(r'\.\s*$', '', title)
+            if len(title.split()) >= 3:
+                return title, False
 
     # === Fallback: second sentence if it looks like a title ===
     # Use smart splitting that skips author initials like "M." "J."
