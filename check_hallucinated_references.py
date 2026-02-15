@@ -2384,6 +2384,10 @@ def get_query_words(title, n=6):
     Preserves trailing punctuation (?, !) and hyphenated/apostrophe words to improve
     search accuracy for titles like "Is AI Safe?" or "What's Next?".
     """
+    # Strip BibTeX-style curly braces used for capitalization preservation
+    # e.g., "{BERT}" -> "BERT", "{M}ixup" -> "Mixup", "{COVID}-19" -> "COVID-19"
+    title = re.sub(r'[{}]', '', title)
+
     # Keep punctuation attached to words: handles contractions (What's), hyphens (Machine-Learning),
     # and trailing ?/! which can be significant for searches
     all_words = re.findall(r"[a-zA-Z0-9]+(?:['''\-][a-zA-Z0-9]+)*[?!]?", title)

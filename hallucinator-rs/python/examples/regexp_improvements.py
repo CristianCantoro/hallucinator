@@ -25,6 +25,7 @@ Improvements covered:
 18. Preserve hyphens after digits in product names (Qwen2-VL pattern)
 19. Conservative prefix matching for titles with subtitles (Issue #119)
 20. Middle initial without period (Issue #123: "J. D Kaplan" pattern)
+21. BibTeX curly brace stripping in query word extraction ({M}ixup -> Mixup)
 
 Run with:
     pip install .          # from hallucinator-rs/
@@ -2237,6 +2238,110 @@ let is_author_pattern =
 
 
 # =============================================================================
+# IMPROVEMENT 21: BibTeX Curly Brace Stripping in Query Word Extraction
+# =============================================================================
+# BibTeX uses curly braces to preserve capitalization when generating citations.
+# Some reference managers export titles with these markers, e.g.:
+#   "{BERT}: Pre-training of Deep Bidirectional Transformers"
+#   "Combining {M}ixup and {A}ttention"
+#   "{COVID}-19 Detection Using Deep Learning"
+#
+# The regex in get_query_words() stops at { and } characters, splitting words
+# like "{M}ixup" into ["M", "ixup"] instead of ["Mixup"].
+#
+# Fix: Strip curly braces from the title before extracting query words.
+#
+# Location in Python: get_query_words() function
+# Rust location: hallucinator-core/src/query.rs (or equivalent query builder)
+
+
+def get_query_words_bibtex_fix(title: str, n: int = 6) -> list:
+    """Extract n significant words from title, handling BibTeX braces.
+
+    This version strips BibTeX-style curly braces before word extraction.
+    """
+    # Strip BibTeX-style curly braces used for capitalization preservation
+    # e.g., "{BERT}" -> "BERT", "{M}ixup" -> "Mixup", "{COVID}-19" -> "COVID-19"
+    title = re.sub(r'[{}]', '', title)
+
+    # Keep punctuation attached to words
+    all_words = re.findall(r"[a-zA-Z0-9]+(?:['''\-][a-zA-Z0-9]+)*[?!]?", title)
+
+    # Stop words to skip
+    stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to',
+                  'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are',
+                  'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does',
+                  'did', 'will', 'would', 'could', 'should', 'may', 'might',
+                  'can', 'this', 'that', 'these', 'those', 'it', 'its'}
+
+    def is_significant(w):
+        w_base = w.rstrip('?!')
+        if w_base.lower() in stop_words:
+            return False
+        if len(w_base) >= 3:
+            return True
+        has_letter = any(c.isalpha() for c in w_base)
+        has_digit = any(c.isdigit() for c in w_base)
+        return has_letter and has_digit
+
+    significant = [w for w in all_words if is_significant(w)]
+    return significant[:n] if len(significant) >= 3 else all_words[:n]
+
+
+def test_bibtex_curly_braces():
+    """Test BibTeX curly brace stripping in query word extraction."""
+    print("IMPROVEMENT 21: BibTeX Curly Brace Stripping")
+    print("-" * 60)
+
+    test_cases = [
+        # (title, expected_words_to_contain, description)
+        ("Combining {M}ixup and {A}ttention", ["Mixup", "Attention"],
+         "Mid-word braces: {M}ixup -> Mixup"),
+        ("{BERT}: Pre-training of Deep Bidirectional Transformers",
+         ["BERT", "Pre-training", "Deep", "Bidirectional", "Transformers"],
+         "Whole-word braces: {BERT} -> BERT"),
+        ("{COVID}-19 Detection Using Deep Learning",
+         ["COVID-19", "Detection", "Using", "Deep", "Learning"],
+         "Braces with hyphen: {COVID}-19 -> COVID-19"),
+        ("No braces here", ["braces"],
+         "No braces: unchanged"),
+        ("{GPT}-4 Technical Report", ["GPT-4", "Technical", "Report"],
+         "Model name with braces"),
+    ]
+
+    all_passed = True
+    for title, expected_words, desc in test_cases:
+        words = get_query_words_bibtex_fix(title)
+        missing = [w for w in expected_words if w not in words]
+        if missing:
+            print(f"  [FAIL] {desc}")
+            print(f"         Title: {title}")
+            print(f"         Got: {words}")
+            print(f"         Missing: {missing}")
+            all_passed = False
+        else:
+            print(f"  [PASS] {desc}: {words}")
+
+    print()
+    return all_passed
+
+
+# Rust implementation pattern:
+RUST_BIBTEX_BRACE_FIX = r"""
+// In query.rs or equivalent:
+// Strip BibTeX-style curly braces before extracting query words
+
+fn get_query_words(title: &str, n: usize) -> Vec<String> {
+    // Strip BibTeX-style curly braces used for capitalization preservation
+    // e.g., "{BERT}" -> "BERT", "{M}ixup" -> "Mixup", "{COVID}-19" -> "COVID-19"
+    let title = title.replace('{', "").replace('}', "");
+
+    // ... rest of word extraction logic ...
+}
+"""
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -2261,6 +2366,7 @@ if __name__ == "__main__":
     test_product_name_hyphen_preservation()
     test_subtitle_prefix_matching()
     test_middle_initial_no_period()
+    test_bibtex_curly_braces()
     test_combined_extraction()
     print_patterns_to_port()
 
