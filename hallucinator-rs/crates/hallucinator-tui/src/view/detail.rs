@@ -13,7 +13,14 @@ use crate::view::truncate;
 
 /// Render the Reference Detail screen into the given area.
 /// `footer_area` is a full-width row below the main content + activity panel.
-pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize, area: Rect, footer_area: Rect) {
+pub fn render_in(
+    f: &mut Frame,
+    app: &App,
+    paper_index: usize,
+    ref_index: usize,
+    area: Rect,
+    footer_area: Rect,
+) {
     let theme = &app.theme;
     let paper = &app.papers[paper_index];
     let refs = &app.ref_states[paper_index];

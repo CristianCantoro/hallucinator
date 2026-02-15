@@ -183,8 +183,7 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
     let label_width: usize = 24;
     let hint_width: usize = 23; // "  (o:browse  b:build)"
     let border: usize = 2;
-    let max_path_len = (width as usize)
-        .saturating_sub(label_width + hint_width + border);
+    let max_path_len = (width as usize).saturating_sub(label_width + hint_width + border);
 
     // Item 0: DBLP offline path (editable)
     let cursor = if config.item_cursor == 0 { "> " } else { "  " };
@@ -208,7 +207,10 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         Span::styled(display_val, val_style),
     ];
     if config.item_cursor == 0 && !config.editing {
-        spans.push(Span::styled("  (o:browse  b:build)", Style::default().fg(theme.dim)));
+        spans.push(Span::styled(
+            "  (o:browse  b:build)",
+            Style::default().fg(theme.dim),
+        ));
     }
     lines.push(Line::from(spans));
 
@@ -246,7 +248,10 @@ fn render_databases(lines: &mut Vec<Line>, config: &ConfigState, theme: &Theme, 
         Span::styled(display_val, val_style),
     ];
     if config.item_cursor == 1 && !config.editing {
-        spans.push(Span::styled("  (o:browse  b:build)", Style::default().fg(theme.dim)));
+        spans.push(Span::styled(
+            "  (o:browse  b:build)",
+            Style::default().fg(theme.dim),
+        ));
     }
     lines.push(Line::from(spans));
 

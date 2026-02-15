@@ -595,7 +595,8 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
     .unwrap()
     .progress_chars("=> ");
 
-    let parse_spinner_style = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}").unwrap();
+    let parse_spinner_style =
+        ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}").unwrap();
 
     let dl_bar = multi.add(ProgressBar::new(0));
     dl_bar.set_style(dl_unknown_style.clone());
@@ -706,9 +707,8 @@ async fn update_dblp(db_path: &PathBuf) -> anyhow::Result<()> {
                 parse_bar.finish_and_clear();
             }
             if skipped {
-                finalize_bar.finish_with_message(
-                    "Database is already up to date (304 Not Modified)",
-                );
+                finalize_bar
+                    .finish_with_message("Database is already up to date (304 Not Modified)");
             } else {
                 finalize_bar.finish_with_message(format!(
                     "Indexed {} publications, {} authors (total {:.0?})",
@@ -752,7 +752,8 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
     .unwrap()
     .progress_chars("=> ");
 
-    let parse_spinner_style = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}").unwrap();
+    let parse_spinner_style =
+        ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}").unwrap();
 
     let dl_bar = multi.add(ProgressBar::new(0));
     dl_bar.set_style(dl_unknown_style.clone());
@@ -858,9 +859,8 @@ async fn update_acl(db_path: &PathBuf) -> anyhow::Result<()> {
                 parse_bar.finish_and_clear();
             }
             if skipped {
-                finalize_bar.finish_with_message(
-                    "Database is already up to date (same commit SHA)",
-                );
+                finalize_bar
+                    .finish_with_message("Database is already up to date (same commit SHA)");
             } else {
                 finalize_bar.finish_with_message(format!(
                     "Indexed {} publications, {} authors (total {:.0?})",

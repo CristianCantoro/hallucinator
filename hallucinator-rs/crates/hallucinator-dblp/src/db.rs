@@ -55,7 +55,7 @@ pub fn begin_bulk_load(conn: &Connection) -> Result<(), DblpError> {
     conn.execute_batch(
         "PRAGMA synchronous = OFF; \
          PRAGMA temp_store = MEMORY; \
-         PRAGMA cache_size = -64000;",  // 64 MB page cache
+         PRAGMA cache_size = -64000;", // 64 MB page cache
     )?;
     Ok(())
 }

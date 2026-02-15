@@ -41,10 +41,7 @@ fn fix1_should_truncate_venue_international_conference() {
 
 #[test]
 fn fix1_should_truncate_venue_after_exclamation() {
-    let result = clean_title(
-        "Is this the answer! The 2023 Conference on Methods",
-        false,
-    );
+    let result = clean_title("Is this the answer! The 2023 Conference on Methods", false);
     assert_eq!(
         result, "Is this the answer!",
         "Should truncate 'The 2023 Conference' after '!'"
@@ -56,10 +53,7 @@ fn fix1_should_not_truncate_no_venue_after_question_mark() {
     // Python: "Can LLMs keep a secret? Testing privacy implications" -> unchanged
     // Note: clean_title with from_quotes=false may truncate at sentence end,
     // so we use from_quotes=true to match the Python test intent (no venue -> no truncation).
-    let result = clean_title(
-        "Can LLMs keep a secret? Testing privacy implications",
-        true,
-    );
+    let result = clean_title("Can LLMs keep a secret? Testing privacy implications", true);
     assert!(
         result.contains("Testing privacy"),
         "Should not truncate when no venue follows '?': got '{}'",
@@ -70,10 +64,7 @@ fn fix1_should_not_truncate_no_venue_after_question_mark() {
 #[test]
 fn fix1_should_not_truncate_bert_study() {
     // Python: "What does BERT learn? A study of representations" -> unchanged
-    let result = clean_title(
-        "What does BERT learn? A study of representations",
-        true,
-    );
+    let result = clean_title("What does BERT learn? A study of representations", true);
     assert!(
         result.contains("A study of representations"),
         "Should not truncate when no venue follows '?': got '{}'",
@@ -304,7 +295,10 @@ fn fix4_should_not_reject_we_present_title() {
 #[test]
 fn fix4_should_not_reject_released_dataset_title() {
     assert_ne!(
-        clean_title("Released: A New Dataset for Natural Language Processing", false),
+        clean_title(
+            "Released: A New Dataset for Natural Language Processing",
+            false
+        ),
         "",
         "Valid title starting with 'Released:' should not be rejected"
     );

@@ -58,9 +58,8 @@ pub fn extract_doi(text: &str) -> Option<String> {
     let text_fixed = FIX1.replace_all(text, "$1$2");
 
     // Pattern 1b: DOI ending with digits + newline + DOI continuation
-    static FIX1B: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(10\.\d{4,}/[^\s\]>,]+\d)\s*\n\s*(\d+(?:\.\d+)*)").unwrap()
-    });
+    static FIX1B: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(10\.\d{4,}/[^\s\]>,]+\d)\s*\n\s*(\d+(?:\.\d+)*)").unwrap());
     let text_fixed = FIX1B.replace_all(&text_fixed, "$1$2");
 
     // Pattern 2: DOI ending with dash + newline + continuation
@@ -70,10 +69,8 @@ pub fn extract_doi(text: &str) -> Option<String> {
 
     // Pattern 3: URL split across lines (period variant)
     static FIX3: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>,]+\.)\s*\n\s*(\d+)",
-        )
-        .unwrap()
+        Regex::new(r"(?i)(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>,]+\.)\s*\n\s*(\d+)")
+            .unwrap()
     });
     let text_fixed = FIX3.replace_all(&text_fixed, "$1$2");
 
@@ -96,8 +93,7 @@ pub fn extract_doi(text: &str) -> Option<String> {
     }
 
     // Priority 2: DOI pattern without URL prefix
-    static DOI_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"10\.\d{4,}/[^\s\]>},]+").unwrap());
+    static DOI_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"10\.\d{4,}/[^\s\]>},]+").unwrap());
     if let Some(m) = DOI_RE.find(&text_fixed) {
         let doi = m.as_str();
         return Some(clean_doi(doi));
@@ -279,7 +275,10 @@ mod tests {
 
     #[test]
     fn test_clean_doi_no_parens() {
-        assert_eq!(clean_doi("10.1145/3442381.3450048"), "10.1145/3442381.3450048");
+        assert_eq!(
+            clean_doi("10.1145/3442381.3450048"),
+            "10.1145/3442381.3450048"
+        );
     }
 
     #[test]
@@ -300,10 +299,7 @@ mod tests {
 
     #[test]
     fn test_clean_doi_unbalanced_trailing_bracket() {
-        assert_eq!(
-            clean_doi("10.1234/test[1]extra]"),
-            "10.1234/test[1]extra"
-        );
+        assert_eq!(clean_doi("10.1234/test[1]extra]"), "10.1234/test[1]extra");
     }
 
     #[test]

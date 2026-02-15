@@ -2290,7 +2290,9 @@ impl App {
         let screen = self.screen.clone();
         match screen {
             Screen::Queue => crate::view::queue::render_in(f, self, main_area, footer_area),
-            Screen::Paper(idx) => crate::view::paper::render_in(f, self, idx, main_area, footer_area),
+            Screen::Paper(idx) => {
+                crate::view::paper::render_in(f, self, idx, main_area, footer_area)
+            }
             Screen::RefDetail(paper_idx, ref_idx) => {
                 crate::view::detail::render_in(f, self, paper_idx, ref_idx, main_area, footer_area)
             }
@@ -2342,7 +2344,10 @@ fn format_dblp_progress(
                 .map(|s| {
                     let elapsed = s.elapsed().as_secs_f64();
                     if elapsed > 0.5 {
-                        format!(" {}/s", format_bytes((*bytes_downloaded as f64 / elapsed) as u64))
+                        format!(
+                            " {}/s",
+                            format_bytes((*bytes_downloaded as f64 / elapsed) as u64)
+                        )
                     } else {
                         String::new()
                     }
@@ -2352,11 +2357,19 @@ fn format_dblp_progress(
                 let pct = (*bytes_downloaded as f64 / *total as f64 * 100.0) as u32;
                 let eta = format_eta(*bytes_downloaded, *total, build_started);
                 format!(
-                    "Downloading... {} / {} ({}%){}{}", format_bytes(*bytes_downloaded),
-                    format_bytes(*total), pct, speed, eta
+                    "Downloading... {} / {} ({}%){}{}",
+                    format_bytes(*bytes_downloaded),
+                    format_bytes(*total),
+                    pct,
+                    speed,
+                    eta
                 )
             } else {
-                format!("Downloading... {}{}", format_bytes(*bytes_downloaded), speed)
+                format!(
+                    "Downloading... {}{}",
+                    format_bytes(*bytes_downloaded),
+                    speed
+                )
             }
         }
         hallucinator_dblp::BuildProgress::Parsing {
@@ -2373,7 +2386,10 @@ fn format_dblp_progress(
                 .map(|s| {
                     let elapsed = s.elapsed().as_secs_f64();
                     if elapsed > 0.5 {
-                        format!(" ({}/s)", format_number((*records_inserted as f64 / elapsed) as u64))
+                        format!(
+                            " ({}/s)",
+                            format_number((*records_inserted as f64 / elapsed) as u64)
+                        )
                     } else {
                         String::new()
                     }
@@ -2381,12 +2397,17 @@ fn format_dblp_progress(
                 .unwrap_or_default();
             let eta = format_eta(*bytes_read, *bytes_total, parse_started);
             format!(
-                "Parsing... {} publications ({}%){}{}", format_number(*records_inserted), pct,
-                rate, eta
+                "Parsing... {} publications ({}%){}{}",
+                format_number(*records_inserted),
+                pct,
+                rate,
+                eta
             )
         }
         hallucinator_dblp::BuildProgress::RebuildingIndex => "Rebuilding FTS index...".to_string(),
-        hallucinator_dblp::BuildProgress::Compacting => "Compacting database (VACUUM)...".to_string(),
+        hallucinator_dblp::BuildProgress::Compacting => {
+            "Compacting database (VACUUM)...".to_string()
+        }
         hallucinator_dblp::BuildProgress::Complete {
             publications,
             authors,
@@ -2396,7 +2417,8 @@ fn format_dblp_progress(
                 "Already up to date (304 Not Modified)".to_string()
             } else {
                 format!(
-                    "Complete: {} publications, {} authors", format_number(*publications),
+                    "Complete: {} publications, {} authors",
+                    format_number(*publications),
                     format_number(*authors)
                 )
             }
@@ -2419,7 +2441,10 @@ fn format_acl_progress(
                 .map(|s| {
                     let elapsed = s.elapsed().as_secs_f64();
                     if elapsed > 0.5 {
-                        format!(" {}/s", format_bytes((*bytes_downloaded as f64 / elapsed) as u64))
+                        format!(
+                            " {}/s",
+                            format_bytes((*bytes_downloaded as f64 / elapsed) as u64)
+                        )
                     } else {
                         String::new()
                     }
@@ -2429,11 +2454,19 @@ fn format_acl_progress(
                 let pct = (*bytes_downloaded as f64 / *total as f64 * 100.0) as u32;
                 let eta = format_eta(*bytes_downloaded, *total, build_started);
                 format!(
-                    "Downloading... {} / {} ({}%){}{}", format_bytes(*bytes_downloaded),
-                    format_bytes(*total), pct, speed, eta
+                    "Downloading... {} / {} ({}%){}{}",
+                    format_bytes(*bytes_downloaded),
+                    format_bytes(*total),
+                    pct,
+                    speed,
+                    eta
                 )
             } else {
-                format!("Downloading... {}{}", format_bytes(*bytes_downloaded), speed)
+                format!(
+                    "Downloading... {}{}",
+                    format_bytes(*bytes_downloaded),
+                    speed
+                )
             }
         }
         hallucinator_acl::BuildProgress::Extracting { files_extracted } => {
@@ -2449,7 +2482,10 @@ fn format_acl_progress(
                 .map(|s| {
                     let elapsed = s.elapsed().as_secs_f64();
                     if elapsed > 0.5 {
-                        format!(" ({}/s)", format_number((*records_inserted as f64 / elapsed) as u64))
+                        format!(
+                            " ({}/s)",
+                            format_number((*records_inserted as f64 / elapsed) as u64)
+                        )
                     } else {
                         String::new()
                     }
@@ -2457,8 +2493,13 @@ fn format_acl_progress(
                 .unwrap_or_default();
             let eta = format_eta(*files_processed, *files_total, parse_started);
             format!(
-                "Parsing... {} records, {} inserted ({}/{}){}{}", format_number(*records_parsed),
-                format_number(*records_inserted), files_processed, files_total, rate, eta
+                "Parsing... {} records, {} inserted ({}/{}){}{}",
+                format_number(*records_parsed),
+                format_number(*records_inserted),
+                files_processed,
+                files_total,
+                rate,
+                eta
             )
         }
         hallucinator_acl::BuildProgress::RebuildingIndex => "Rebuilding FTS index...".to_string(),
@@ -2471,7 +2512,8 @@ fn format_acl_progress(
                 "Already up to date (same commit SHA)".to_string()
             } else {
                 format!(
-                    "Complete: {} publications, {} authors", format_number(*publications),
+                    "Complete: {} publications, {} authors",
+                    format_number(*publications),
                     format_number(*authors)
                 )
             }
@@ -2518,9 +2560,7 @@ fn format_number(n: u64) -> String {
 
 /// Canonicalize a path and strip the Windows `\\?\` extended-length prefix.
 fn clean_canonicalize(path: &std::path::Path) -> String {
-    let canonical = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let s = canonical.display().to_string();
     s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
 }

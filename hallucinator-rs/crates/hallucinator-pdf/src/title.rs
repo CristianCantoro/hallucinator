@@ -1688,8 +1688,14 @@ mod tests {
     #[test]
     fn test_venue_only_rejection() {
         // FIX 2: Venue-only titles should be rejected (empty string returned)
-        assert_eq!(clean_title("SIAM Journal on Scientific Computing", false), "");
-        assert_eq!(clean_title("IEEE Transactions on Pattern Analysis", false), "");
+        assert_eq!(
+            clean_title("SIAM Journal on Scientific Computing", false),
+            ""
+        );
+        assert_eq!(
+            clean_title("IEEE Transactions on Pattern Analysis", false),
+            ""
+        );
         assert_eq!(
             clean_title("Journal of Machine Learning Research", false),
             ""
@@ -1711,17 +1717,17 @@ mod tests {
             clean_title("A Survey of Machine Learning Techniques", false),
             ""
         );
-        assert_ne!(
-            clean_title("Attention Is All You Need", false),
-            ""
-        );
+        assert_ne!(clean_title("Attention Is All You Need", false), "");
     }
 
     #[test]
     fn test_author_initials_list_rejection() {
         // FIX 3: Author initials lists should be rejected
         assert_eq!(
-            clean_title("AL, Andrew Ahn, Nic Becker, Stephanie Carroll, Nico Christie", false),
+            clean_title(
+                "AL, Andrew Ahn, Nic Becker, Stephanie Carroll, Nico Christie",
+                false
+            ),
             ""
         );
         assert_eq!(
@@ -1765,10 +1771,7 @@ mod tests {
     #[test]
     fn test_non_reference_valid_titles_not_rejected() {
         // Valid titles should NOT be rejected
-        assert_ne!(
-            clean_title("The Answer to Everything: A Survey", false),
-            ""
-        );
+        assert_ne!(clean_title("The Answer to Everything: A Survey", false), "");
     }
 
     #[test]
@@ -1788,7 +1791,9 @@ mod tests {
         assert!(is_venue_only("ACM Journal on Computing Surveys"));
         assert!(is_venue_only("Journal of Machine Learning Research"));
         assert!(is_venue_only("Proceedings of the International Conference"));
-        assert!(is_venue_only("Advances in Neural Information Processing Systems"));
+        assert!(is_venue_only(
+            "Advances in Neural Information Processing Systems"
+        ));
 
         assert!(!is_venue_only("A Survey of Machine Learning Techniques"));
         assert!(!is_venue_only("Attention Is All You Need"));
@@ -1802,7 +1807,9 @@ mod tests {
         let (title, from_quotes) = extract_title_from_reference(ref_text);
         assert!(from_quotes, "Should detect quoted title");
         assert!(
-            title.contains("Autoadmin") && title.contains("what-if") && title.contains("index analysis"),
+            title.contains("Autoadmin")
+                && title.contains("what-if")
+                && title.contains("index analysis"),
             "Should extract full title including nested quotes: {}",
             title,
         );
