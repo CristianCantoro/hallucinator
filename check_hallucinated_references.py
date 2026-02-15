@@ -280,7 +280,41 @@ AUTHOR_LIST_PATTERNS = [
     re.compile(r'^[A-Z]{2,}\s+AND\s+[A-Z]\.\s*[A-Z]{2,}\s*,'),
     # Broken umlaut + author pattern: B ¨UNZ, P. CAMACHO
     re.compile(r'^[A-Z]\s*[¨´`]\s*[A-Z]+\s*,\s*[A-Z]\.'),
+    # Short initials followed by name list: "AL, Andrew Ahn, Nic Becker, Stephanie" (OpenAI-style)
+    # Requires at least two full names after initials to avoid false positives like "AI, Machine Learning,"
+    re.compile(r'^[A-Z]{1,3},\s+[A-Z][a-z]+\s+[A-Z][a-z]+,\s+[A-Z][a-z]+\s+[A-Z][a-z]+'),
 ]
+
+
+# Venue-only patterns - titles that are actually just venue/journal names
+# These should be rejected as they indicate extraction grabbed the wrong part
+VENUE_ONLY_PATTERNS = [
+    # SIAM/IEEE/ACM Journal/Transactions/Review
+    re.compile(r'^(?:SIAM|IEEE|ACM|PNAS)\s+(?:Journal|Transactions|Review)', re.IGNORECASE),
+    # Journal/Transactions/Proceedings of/on
+    re.compile(r'^(?:Journal|Transactions|Proceedings)\s+(?:of|on)\s+', re.IGNORECASE),
+    # Advances in Neural Information Processing Systems
+    re.compile(r'^Advances\s+in\s+Neural', re.IGNORECASE),
+]
+
+
+# Non-reference content patterns - content that shouldn't be extracted as references
+# Common in NeurIPS papers with checklists and acknowledgments
+NON_REFERENCE_PATTERNS = [
+    # NeurIPS checklist bullet points
+    re.compile(r'^[•\-]\s+(?:The answer|Released models|If you are using)', re.IGNORECASE),
+    # Acknowledgments
+    re.compile(r'^We gratefully acknowledge', re.IGNORECASE),
+]
+
+
+# Pattern to detect venue names following ?/! in titles
+# Used to cut titles that incorrectly include venue after question/exclamation
+VENUE_AFTER_PUNCTUATION_PATTERN = re.compile(
+    r'[?!]\s+(?:International|Proceedings|Conference|Workshop|Symposium|Association|'
+    r'The\s+\d{4}\s+Conference|Nations|Annual|IEEE|ACM|USENIX|AAAI|NeurIPS|ICML|ICLR|'
+    r'CVPR|ICCV|ECCV|ACL|EMNLP|NAACL)'
+)
 
 
 def is_likely_author_list(text):
@@ -293,6 +327,44 @@ def is_likely_author_list(text):
         if pattern.match(text):
             return True
     return False
+
+
+def is_venue_only(text):
+    """Check if text is just a venue/journal name, not a paper title.
+
+    Returns True if the text matches venue-only patterns.
+    """
+    for pattern in VENUE_ONLY_PATTERNS:
+        if pattern.match(text):
+            return True
+    return False
+
+
+def is_non_reference_content(text):
+    """Check if text is non-reference content (checklists, acknowledgments, etc.).
+
+    Returns True if the text matches non-reference patterns.
+    """
+    for pattern in NON_REFERENCE_PATTERNS:
+        if pattern.match(text):
+            return True
+    return False
+
+
+def truncate_title_at_venue(title):
+    """Truncate title if it contains venue name after ?/! punctuation.
+
+    Some reference formats don't have proper delimiters between title and venue,
+    especially when the title ends with ? or !. This function detects and removes
+    the venue portion.
+
+    Returns the truncated title (keeping the ?/!) or original if no venue found.
+    """
+    match = VENUE_AFTER_PUNCTUATION_PATTERN.search(title)
+    if match:
+        # Keep everything up to and including the ?/!
+        return title[:match.start() + 1].strip()
+    return title
 
 
 def extract_doi(text):
@@ -310,52 +382,83 @@ def extract_doi(text):
     Returns the DOI string (e.g., "10.1234/example") or None if not found.
     """
     # First, fix DOIs that are split across lines (apply to all text before pattern matching)
+    # Note: Allow parentheses in DOI patterns (e.g., 10.1016/0021-9681(87)90171-8)
     # Pattern 1: DOI ending with a period followed by newline and 3+ digits
     # e.g., "10.1145/3442381.\n3450048" -> "10.1145/3442381.3450048"
     # e.g., "10.48550/arXiv.2404.\n06011" -> "10.48550/arXiv.2404.06011"
     # Requires 3+ digits to avoid joining sentence periods with short page numbers (e.g., ".\n18")
-    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d{3,})', r'\1\2', text)
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>,]+\.)\s*\n\s*(\d{3,})', r'\1\2', text)
 
     # Pattern 1b: DOI ending with digits followed by newline and DOI continuation
     # e.g., "10.1109/SP40000.20\n20.00038" -> "10.1109/SP40000.2020.00038"
     # e.g., "10.1145/2884781.2884\n807" -> "10.1145/2884781.2884807"
     # e.g., "10.1109/TSE.20\n18.2884955" -> "10.1109/TSE.2018.2884955"
     # Continuation must look like DOI content: digits optionally followed by .digits
-    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+\d)\s*\n\s*(\d+(?:\.\d+)*)', r'\1\2', text_fixed)
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>,]+\d)\s*\n\s*(\d+(?:\.\d+)*)', r'\1\2', text_fixed)
 
     # Pattern 2: DOI ending with a dash followed by newline and continuation
     # e.g., "10.2478/popets-\n2019-0037" -> "10.2478/popets-2019-0037"
-    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>)}]+-)\s*\n\s*(\S+)', r'\1\2', text_fixed)
+    text_fixed = re.sub(r'(10\.\d{4,}/[^\s\]>,]+-)\s*\n\s*(\S+)', r'\1\2', text_fixed)
 
     # Pattern 3: URL split across lines - doi.org URL followed by newline and DOI continuation
     # e.g., "https://doi.org/10.48550/arXiv.2404.\n06011"
-    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>)}]+\.)\s*\n\s*(\d+)', r'\1\2', text_fixed, flags=re.IGNORECASE)
+    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>,]+\.)\s*\n\s*(\d+)', r'\1\2', text_fixed, flags=re.IGNORECASE)
 
     # Pattern 3b: URL split mid-number
-    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>)}]+\d)\s*\n\s*(\d[^\s\]>)}]*)', r'\1\2', text_fixed, flags=re.IGNORECASE)
+    text_fixed = re.sub(r'(https?://(?:dx\.)?doi\.org/10\.\d{4,}/[^\s\]>,]+\d)\s*\n\s*(\d[^\s\]>,]*)', r'\1\2', text_fixed, flags=re.IGNORECASE)
 
     # Priority 1: Extract from URL format (most reliable - clear boundaries)
     # Matches https://doi.org/... or http://dx.doi.org/... or http://doi.org/...
-    url_pattern = r'https?://(?:dx\.)?doi\.org/(10\.\d{4,}/[^\s\]>)},]+)'
+    # Allow parentheses in DOI (e.g., 10.1016/0021-9681(87)90171-8)
+    url_pattern = r'https?://(?:dx\.)?doi\.org/(10\.\d{4,}/[^\s\]>},]+)'
     url_match = re.search(url_pattern, text_fixed, re.IGNORECASE)
     if url_match:
         doi = url_match.group(1)
-        # Clean trailing punctuation
-        doi = doi.rstrip('.,;:')
+        # Clean trailing punctuation and fix unbalanced parentheses
+        doi = _clean_doi(doi)
         return doi
 
     # Priority 2: DOI pattern without URL prefix
-    # 10.XXXX/suffix where suffix can contain various characters
+    # 10.XXXX/suffix where suffix can contain various characters including parentheses
     # The suffix ends at whitespace, or common punctuation at end of reference
-    doi_pattern = r'10\.\d{4,}/[^\s\]>)}]+'
+    # Allow parentheses (e.g., 10.1016/0021-9681(87)90171-8)
+    doi_pattern = r'10\.\d{4,}/[^\s\]>},]+'
 
     match = re.search(doi_pattern, text_fixed)
     if match:
         doi = match.group(0)
-        # Clean trailing punctuation that might have been captured
-        doi = doi.rstrip('.,;:')
+        # Clean trailing punctuation and fix unbalanced parentheses
+        doi = _clean_doi(doi)
         return doi
     return None
+
+
+def _clean_doi(doi):
+    """Clean a DOI string by removing trailing punctuation and unbalanced parentheses.
+
+    DOIs can legitimately contain parentheses (e.g., 10.1016/0021-9681(87)90171-8),
+    but trailing unbalanced ')' are likely reference delimiters, not part of the DOI.
+    """
+    # First, strip common trailing punctuation
+    doi = doi.rstrip('.,;:')
+
+    # Handle unbalanced parentheses at the end
+    # If DOI ends with ')' and parens are unbalanced, strip trailing ')'
+    while doi.endswith(')'):
+        open_count = doi.count('(')
+        close_count = doi.count(')')
+        if close_count > open_count:
+            doi = doi[:-1].rstrip('.,;:')
+        else:
+            break
+
+    # Similarly for brackets and braces (less common but possible)
+    while doi.endswith(']') and doi.count(']') > doi.count('['):
+        doi = doi[:-1].rstrip('.,;:')
+    while doi.endswith('}') and doi.count('}') > doi.count('{'):
+        doi = doi[:-1].rstrip('.,;:')
+
+    return doi
 
 
 def validate_doi(doi):
@@ -2154,9 +2257,25 @@ def extract_references_with_titles_and_authors(pdf_path, return_stats=False):
                 continue
 
         title, from_quotes = extract_title_from_reference(ref_text)
+
+        # Truncate title if it contains venue after ?/! punctuation
+        title = truncate_title_at_venue(title)
+
         title = clean_title(title, from_quotes=from_quotes)
+
+        # Skip if title is too short
         if not title or len(title.split()) < 4:
             stats['skipped_short_title'] += 1
+            continue
+
+        # Skip if extracted "title" is actually a venue/journal name
+        if is_venue_only(title):
+            stats['skipped_short_title'] += 1  # Count as extraction failure
+            continue
+
+        # Skip if extracted "title" is non-reference content (checklists, acknowledgments)
+        if is_non_reference_content(title):
+            stats['skipped_short_title'] += 1  # Count as extraction failure
             continue
 
         authors = extract_authors_from_reference(ref_text)
