@@ -1027,6 +1027,12 @@ def fix_hyphenation(text):
         after_rest = match.group(3)  # rest of word after hyphen
 
         after_word = after_char + after_rest
+
+        # If the part before hyphen ends with a digit, keep the hyphen
+        # These are product/model names like "Qwen2-VL", "GPT-4-turbo", "BERT-base"
+        if before.isdigit():
+            return f'{before}-{after_word}'
+
         # If the word after hyphen is a common compound suffix, keep the hyphen
         after_lower = after_word.lower()
         for suffix in COMPOUND_SUFFIXES:
@@ -1543,6 +1549,9 @@ def clean_title(title, from_quotes=False):
                 # But skip if period is immediately followed by a letter (no space) - product names like "big.LITTLE", "Node.js"
                 if pos + 1 < len(title) and title[pos + 1].isalpha():
                     continue
+                # Also skip if period is followed by space+digit - version numbers like "Flux. 1", "GPT-4. 0"
+                if pos + 2 < len(title) and title[pos + 1] == ' ' and title[pos + 2].isdigit():
+                    continue
                 title = title[:pos]
                 break
 
@@ -1653,7 +1662,8 @@ def split_sentences_skip_initials(text):
                                  re.match(rf'^{surname_prefix}\s+[A-Z]', after_period, re.IGNORECASE) or \
                                  re.match(rf'^([A-Z]{surname_char}+)\s+([A-Z]{surname_char}+)\.', after_period) or \
                                  re.match(rf'^([A-Z]{surname_char}+)\.\s+\d', after_period) or \
-                                 re.match(rf'^([A-Z]{surname_char}+)\.\s+[A-Z][a-z]+\s+[a-z]', after_period)
+                                 re.match(rf'^([A-Z]{surname_char}+)\.\s+[A-Z][a-z]+\s+[a-z]', after_period) or \
+                                 re.match(rf'^[A-Z]\s+([A-Z]{surname_char}+)\s*,', after_period)
 
                 if author_pattern:
                     # This clearly looks like another author - skip this period
@@ -1674,6 +1684,12 @@ def split_sentences_skip_initials(text):
 
             # "et al." is a sentence boundary (ends author list)
             # Don't skip it - let it be treated as a sentence boundary
+
+            # Check if period is followed by a digit (version numbers like "Flux. 1", "GPT-4. 0")
+            # These are NOT sentence boundaries - they're part of product/model names
+            after_period = text[match.end():]
+            if after_period and after_period[0].isdigit():
+                continue  # Skip - this is likely a version number
 
         # This is a real sentence boundary
         sentences.append(text[current_start:pos].strip())
@@ -2368,6 +2384,10 @@ def get_query_words(title, n=6):
     Preserves trailing punctuation (?, !) and hyphenated/apostrophe words to improve
     search accuracy for titles like "Is AI Safe?" or "What's Next?".
     """
+    # Strip BibTeX-style curly braces used for capitalization preservation
+    # e.g., "{BERT}" -> "BERT", "{M}ixup" -> "Mixup", "{COVID}-19" -> "COVID-19"
+    title = re.sub(r'[{}]', '', title)
+
     # Keep punctuation attached to words: handles contractions (What's), hyphens (Machine-Learning),
     # and trailing ?/! which can be significant for searches
     all_words = re.findall(r"[a-zA-Z0-9]+(?:['''\-][a-zA-Z0-9]+)*[?!]?", title)
@@ -2665,6 +2685,9 @@ def titles_match(ref_title, found_title, threshold=95):
     Returns True if:
     - Fuzzy match score >= threshold, OR
     - One title is a prefix of the other (handles subtitles/truncation)
+
+    Prefix matching is conservative when titles have subtitles after ? or !
+    to avoid false positives like matching "Title?" to "Title? Subtitle".
     """
     ref_norm = normalize_title(ref_title)
     found_norm = normalize_title(found_title)
@@ -2680,6 +2703,19 @@ def titles_match(ref_title, found_title, threshold=95):
         # Check if shorter is prefix of longer
         shorter, longer = (ref_norm, found_norm) if len(ref_norm) <= len(found_norm) else (found_norm, ref_norm)
         if longer.startswith(shorter):
+            # Issue #119: Be conservative when reference has subtitle after ? or !
+            # If ref has "Title? Subtitle" and found is just "Title?", they may be
+            # different papers with similar titles.
+            ref_has_subtitle = bool(re.search(r'[?!].*[a-zA-Z]', ref_title))
+            found_has_subtitle = bool(re.search(r'[?!].*[a-zA-Z]', found_title))
+
+            # If reference has subtitle but found doesn't, be skeptical - require
+            # the prefix to cover at least 70% of the title to match
+            if ref_has_subtitle and not found_has_subtitle:
+                coverage = len(shorter) / len(longer)
+                if coverage < 0.70:
+                    return False  # Likely different papers with similar title prefix
+
             return True
 
     return False

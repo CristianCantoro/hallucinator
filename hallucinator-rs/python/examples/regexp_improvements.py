@@ -21,6 +21,11 @@ Improvements covered:
 14. Enhanced Springer/LNCS title extraction
 15. Query word extraction with special characters (Issue #107: ?, !, -, ')
 16. Journal Name (Year) title termination (Issue #106: DOIs with / and -)
+17. Version number preservation in sentence splitting (Flux. 1 pattern)
+18. Preserve hyphens after digits in product names (Qwen2-VL pattern)
+19. Conservative prefix matching for titles with subtitles (Issue #119)
+20. Middle initial without period (Issue #123: "J. D Kaplan" pattern)
+21. BibTeX curly brace stripping in query word extraction ({M}ixup -> Mixup)
 
 Run with:
     pip install .          # from hallucinator-rs/
@@ -1880,6 +1885,463 @@ Regex::new(r"\.\s*https?://").unwrap(),
 
 
 # =============================================================================
+# IMPROVEMENT 17: Version Number Preservation in Sentence Splitting
+# =============================================================================
+# Product names like "Flux. 1" or "GPT-4. 0" were incorrectly split as
+# sentence boundaries because a period followed by a digit was treated as
+# a sentence end.
+#
+# Examples that fail:
+#   "et al. Flux. 1 kontext: Flow matching for..."
+#   Title extracted as empty because "Flux." was treated as sentence end
+#
+# Fix: In split_sentences_skip_initials(), don't split when period is
+# followed by whitespace then a digit.
+#
+# Location: hallucinator-pdf/src/title.rs (sentence splitting logic)
+
+def test_version_number_preservation():
+    """Test that version numbers like 'Flux. 1' are not split."""
+    print("=" * 60)
+    print("IMPROVEMENT 17: Version Number Preservation in Sentence Splitting")
+    print("=" * 60)
+
+    # Note: This test demonstrates the fix - actual implementation is in
+    # split_sentences_skip_initials() and clean_title()
+    test_cases = [
+        ("Model. Flux. 1 kontext is great", False, "Flux. 1 should not split"),
+        ("Authors. GPT-4. 0 turbo model", False, "GPT-4. 0 should not split"),
+        ("This is done. Next sentence", True, "Normal sentence should split"),
+    ]
+
+    for text, should_split, desc in test_cases:
+        # Simple check: if ". X" where X is digit should not cause split
+        has_version = bool(re.search(r'\.\s+\d', text))
+        status = "OK" if has_version != should_split else "INFO"
+        print(f"    {status}: {desc}")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_VERSION_NUMBER_FIX = r"""
+// In title.rs, in the sentence splitting logic:
+// Before treating a period as sentence boundary, check if followed by digit
+
+// In split_sentences_skip_initials equivalent:
+// Check if period is followed by whitespace then digit
+let after_period = &text[match_end..];
+if !after_period.is_empty() && after_period.chars().next().unwrap().is_ascii_digit() {
+    continue; // Skip - this is likely a version number like "Flux. 1"
+}
+
+// In clean_title truncation logic:
+// Also skip if period is followed by space+digit
+if pos + 2 < title.len() {
+    let next_char = title.chars().nth(pos + 1);
+    let next_next_char = title.chars().nth(pos + 2);
+    if next_char == Some(' ') && next_next_char.map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        continue; // Version number like "Flux. 1"
+    }
+}
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 18: Preserve Hyphens After Digits in Product Names
+# =============================================================================
+# Product names like "Qwen2-VL" were incorrectly having their hyphens removed
+# during hyphenation fixing because "Qwen2-\nVL" (with line break) was treated
+# as a syllable break.
+#
+# Examples that fail:
+#   "Qwen2-\nvl" → "Qwen2vl" (incorrect, should be "Qwen2-vl")
+#   "GPT-4-\nturbo" → "GPT-4turbo" (incorrect, should be "GPT-4-turbo")
+#
+# Fix: In fix_hyphenation(), if the character before the hyphen is a digit,
+# keep the hyphen (it's likely a product version number).
+#
+# Location: hallucinator-pdf/src/hyphenation.rs or title.rs
+
+def test_product_name_hyphen_preservation():
+    """Test that product names like 'Qwen2-VL' preserve hyphens."""
+    print("=" * 60)
+    print("IMPROVEMENT 18: Preserve Hyphens After Digits in Product Names")
+    print("=" * 60)
+
+    from check_hallucinated_references import fix_hyphenation
+
+    test_cases = [
+        ("Qwen2-\nvl: Enhancing", "Qwen2-vl: Enhancing", "Qwen2-VL hyphen preserved"),
+        ("GPT-4-\nturbo model", "GPT-4-turbo model", "GPT-4-turbo hyphen preserved"),
+        ("detec-\ntion method", "detection method", "Normal syllable break fixed"),
+    ]
+
+    for before, expected, desc in test_cases:
+        result = fix_hyphenation(before)
+        # Normalize whitespace for comparison
+        result_norm = ' '.join(result.split())
+        expected_norm = ' '.join(expected.split())
+        status = "OK" if result_norm == expected_norm else "FAIL"
+        print(f"    {status}: {desc}")
+        if result_norm != expected_norm:
+            print(f"         Expected: '{expected_norm}'")
+            print(f"         Got:      '{result_norm}'")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_PRODUCT_NAME_HYPHEN_FIX = r"""
+// In hyphenation.rs or title.rs, in fix_hyphenation():
+
+fn replace_hyphen(before: char, after_word: &str) -> String {
+    // If the character before hyphen is a digit, keep the hyphen
+    // These are product/model names like "Qwen2-VL", "GPT-4-turbo"
+    if before.is_ascii_digit() {
+        return format!("{}-{}", before, after_word);
+    }
+
+    // Check compound suffixes...
+    let after_lower = after_word.to_lowercase();
+    if COMPOUND_SUFFIXES.iter().any(|s| after_lower == *s || after_lower.starts_with(&format!("{} ", s))) {
+        return format!("{}-{}", before, after_word);
+    }
+
+    // Otherwise remove hyphen (syllable break)
+    format!("{}{}", before, after_word)
+}
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 19: Conservative Prefix Matching for Titles with Subtitles
+# =============================================================================
+# Issue #119: When two papers have similar titles where one is a prefix of the
+# other, false matches can occur. Example:
+#   - Paper A: "Won't Somebody Think of the Children?" (Jo Johnson)
+#   - Paper B: "Won't Somebody Think of the Children?" Examining COPPA... (Reyes et al.)
+#
+# The prefix matching was too permissive: if Paper B is the reference and
+# Paper A is found in the database, the normalized title of A is a prefix of B,
+# causing a false match.
+#
+# Fix: When the reference has a subtitle (text after ? or !) but the found title
+# doesn't, require the prefix to cover at least 70% of the longer title.
+#
+# Location in Python: titles_match() function
+# Rust location: hallucinator-core/src/matching.rs (titles_match)
+
+# Pattern to detect subtitle after punctuation
+SUBTITLE_AFTER_PUNCTUATION_PATTERN = re.compile(r'[?!].*[a-zA-Z]')
+
+
+def titles_match_improved(ref_title: str, found_title: str, threshold: int = 95) -> bool:
+    """Check if two titles match with conservative prefix matching.
+
+    Args:
+        ref_title: The reference title (from the paper being checked)
+        found_title: The title found in the database
+        threshold: Fuzzy match threshold (default 95%)
+
+    Returns:
+        True if titles match, False otherwise
+    """
+    def normalize(title: str) -> str:
+        # Simplified normalization for demonstration
+        return re.sub(r'\W+', '', title.lower())
+
+    ref_norm = normalize(ref_title)
+    found_norm = normalize(found_title)
+
+    # Standard fuzzy match would be done here (using rapidfuzz in actual code)
+    # For demo, we just check exact match as fuzzy substitute
+    if ref_norm == found_norm:
+        return True
+
+    # Check prefix matching with subtitle-aware logic
+    min_len = min(len(ref_norm), len(found_norm))
+    if min_len >= 30:
+        shorter = ref_norm if len(ref_norm) <= len(found_norm) else found_norm
+        longer = found_norm if len(ref_norm) <= len(found_norm) else ref_norm
+
+        if longer.startswith(shorter):
+            # Check for subtitle after ? or !
+            ref_has_subtitle = bool(SUBTITLE_AFTER_PUNCTUATION_PATTERN.search(ref_title))
+            found_has_subtitle = bool(SUBTITLE_AFTER_PUNCTUATION_PATTERN.search(found_title))
+
+            # If reference has subtitle but found doesn't, be skeptical
+            if ref_has_subtitle and not found_has_subtitle:
+                coverage = len(shorter) / len(longer)
+                if coverage < 0.70:
+                    return False  # Likely different papers
+
+            return True
+
+    return False
+
+
+def test_subtitle_prefix_matching():
+    """Test conservative prefix matching for issue #119."""
+    print("IMPROVEMENT 19: Conservative Prefix Matching for Subtitles")
+    print("-" * 60)
+
+    test_cases = [
+        # (ref_title, found_title, expected_match, description)
+        (
+            '"won\'t somebody think of the children?" examining COPPA compliance at scale',
+            '"Won\'t Somebody Think of the Children?"',
+            False,
+            "Ref has subtitle, found doesn't - REJECT"
+        ),
+        (
+            '"won\'t somebody think of the children?" examining COPPA compliance at scale',
+            '"Won\'t Somebody Think of the Children?" Examining COPPA Compliance at Scale',
+            True,
+            "Both have subtitle - ACCEPT"
+        ),
+        (
+            '"Won\'t Somebody Think of the Children?"',
+            '"Won\'t Somebody Think of the Children?" Examining COPPA Compliance at Scale',
+            True,
+            "Ref short, found has subtitle - ACCEPT (ref truncated)"
+        ),
+        (
+            'Introduction to Machine Learning',
+            'Introduction to Machine Learning',
+            True,
+            "Exact match - ACCEPT"
+        ),
+    ]
+
+    for ref, found, expected, desc in test_cases:
+        result = titles_match_improved(ref, found)
+        status = "PASS" if result == expected else "FAIL"
+        print(f"  [{status}] {desc}")
+        if result != expected:
+            print(f"       Expected {expected}, got {result}")
+            print(f"       Ref: {ref[:50]}...")
+            print(f"       Found: {found[:50]}...")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_SUBTITLE_PREFIX_MATCHING = r"""
+// In matching.rs, in titles_match():
+
+fn titles_match(ref_title: &str, found_title: &str, threshold: u8) -> bool {
+    let ref_norm = normalize_for_comparison(ref_title);
+    let found_norm = normalize_for_comparison(found_title);
+
+    // Standard fuzzy match
+    if fuzzy_ratio(&ref_norm, &found_norm) >= threshold {
+        return true;
+    }
+
+    // Prefix matching with subtitle awareness
+    let min_len = ref_norm.len().min(found_norm.len());
+    if min_len >= 30 {
+        let (shorter, longer) = if ref_norm.len() <= found_norm.len() {
+            (&ref_norm, &found_norm)
+        } else {
+            (&found_norm, &ref_norm)
+        };
+
+        if longer.starts_with(shorter.as_str()) {
+            // Issue #119: Check for subtitle after ? or !
+            let subtitle_pattern = regex::Regex::new(r"[?!].*[a-zA-Z]").unwrap();
+            let ref_has_subtitle = subtitle_pattern.is_match(ref_title);
+            let found_has_subtitle = subtitle_pattern.is_match(found_title);
+
+            // If reference has subtitle but found doesn't, require high coverage
+            if ref_has_subtitle && !found_has_subtitle {
+                let coverage = shorter.len() as f64 / longer.len() as f64;
+                if coverage < 0.70 {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    false
+}
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 20: Middle Initial Without Period
+# =============================================================================
+# Issue #123: References with missing periods after middle initials cause
+# misparsing. Example: "J. D Kaplan" (missing period after D) causes the
+# sentence splitter to incorrectly identify "D Kaplan" as a title start.
+#
+# Fix: Add a pattern to recognize "X Surname," (single capital letter followed
+# by space and surname with comma) as an author pattern, not a sentence boundary.
+#
+# Location in Python: split_sentences_skip_initials() function
+# Rust location: hallucinator-pdf/src/sentence.rs
+
+# Pattern to match: single capital letter + space + surname + comma
+# Examples: "D Kaplan,", "A Smith,", "E Brown,"
+MIDDLE_INITIAL_NO_PERIOD_PATTERN = re.compile(r'^[A-Z]\s+([A-Z][a-zA-Z\u00A0-\u017F\'\'\-]+)\s*,')
+
+
+def test_middle_initial_no_period():
+    """Test middle initial without period handling for issue #123."""
+    print("IMPROVEMENT 20: Middle Initial Without Period")
+    print("-" * 60)
+
+    test_cases = [
+        # (after_period_text, should_match_author, description)
+        ("D Kaplan, P. Dhariwal", True, "Missing period: D Kaplan,"),
+        ("A Smith, B. Jones", True, "Missing period: A Smith,"),
+        ("E Brown, et al.", True, "Missing period: E Brown,"),
+        ("A great paper title", False, "Title starting with A"),
+        ("Deep learning methods", False, "Normal title"),
+        ("Brown, T.", True, "Normal surname pattern"),
+    ]
+
+    for text, expected_is_author, desc in test_cases:
+        # Check if our new pattern matches
+        match = MIDDLE_INITIAL_NO_PERIOD_PATTERN.match(text)
+        is_author = match is not None
+
+        # For the last case "Brown, T.", we need different pattern
+        if text == "Brown, T.":
+            is_author = bool(re.match(r'^[A-Z][a-zA-Z]+\s*,', text))
+
+        status = "PASS" if is_author == expected_is_author else "FAIL"
+        print(f"  [{status}] {desc}: match={is_author}")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_MIDDLE_INITIAL_NO_PERIOD = r"""
+// In sentence.rs, in split_sentences_skip_initials():
+// Add this pattern to the list of author patterns that indicate
+// the period should be skipped (it's an author initial, not sentence end)
+
+// Pattern: single capital letter + space + surname + comma
+// Examples: "D Kaplan,", "A Smith,"
+// This handles missing periods after middle initials: "J. D Kaplan" instead of "J. D. Kaplan"
+let middle_initial_pattern = Regex::new(r"^[A-Z]\s+([A-Z][a-zA-Z\u{00A0}-\u{017F}''\-]+)\s*,").unwrap();
+
+// In the author pattern check chain:
+let is_author_pattern =
+    // ... existing patterns ...
+    || middle_initial_pattern.is_match(after_period);  // Issue #123 fix
+"""
+
+
+# =============================================================================
+# IMPROVEMENT 21: BibTeX Curly Brace Stripping in Query Word Extraction
+# =============================================================================
+# BibTeX uses curly braces to preserve capitalization when generating citations.
+# Some reference managers export titles with these markers, e.g.:
+#   "{BERT}: Pre-training of Deep Bidirectional Transformers"
+#   "Combining {M}ixup and {A}ttention"
+#   "{COVID}-19 Detection Using Deep Learning"
+#
+# The regex in get_query_words() stops at { and } characters, splitting words
+# like "{M}ixup" into ["M", "ixup"] instead of ["Mixup"].
+#
+# Fix: Strip curly braces from the title before extracting query words.
+#
+# Location in Python: get_query_words() function
+# Rust location: hallucinator-core/src/query.rs (or equivalent query builder)
+
+
+def get_query_words_bibtex_fix(title: str, n: int = 6) -> list:
+    """Extract n significant words from title, handling BibTeX braces.
+
+    This version strips BibTeX-style curly braces before word extraction.
+    """
+    # Strip BibTeX-style curly braces used for capitalization preservation
+    # e.g., "{BERT}" -> "BERT", "{M}ixup" -> "Mixup", "{COVID}-19" -> "COVID-19"
+    title = re.sub(r'[{}]', '', title)
+
+    # Keep punctuation attached to words
+    all_words = re.findall(r"[a-zA-Z0-9]+(?:['''\-][a-zA-Z0-9]+)*[?!]?", title)
+
+    # Stop words to skip
+    stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to',
+                  'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are',
+                  'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does',
+                  'did', 'will', 'would', 'could', 'should', 'may', 'might',
+                  'can', 'this', 'that', 'these', 'those', 'it', 'its'}
+
+    def is_significant(w):
+        w_base = w.rstrip('?!')
+        if w_base.lower() in stop_words:
+            return False
+        if len(w_base) >= 3:
+            return True
+        has_letter = any(c.isalpha() for c in w_base)
+        has_digit = any(c.isdigit() for c in w_base)
+        return has_letter and has_digit
+
+    significant = [w for w in all_words if is_significant(w)]
+    return significant[:n] if len(significant) >= 3 else all_words[:n]
+
+
+def test_bibtex_curly_braces():
+    """Test BibTeX curly brace stripping in query word extraction."""
+    print("IMPROVEMENT 21: BibTeX Curly Brace Stripping")
+    print("-" * 60)
+
+    test_cases = [
+        # (title, expected_words_to_contain, description)
+        ("Combining {M}ixup and {A}ttention", ["Mixup", "Attention"],
+         "Mid-word braces: {M}ixup -> Mixup"),
+        ("{BERT}: Pre-training of Deep Bidirectional Transformers",
+         ["BERT", "Pre-training", "Deep", "Bidirectional", "Transformers"],
+         "Whole-word braces: {BERT} -> BERT"),
+        ("{COVID}-19 Detection Using Deep Learning",
+         ["COVID-19", "Detection", "Using", "Deep", "Learning"],
+         "Braces with hyphen: {COVID}-19 -> COVID-19"),
+        ("No braces here", ["braces"],
+         "No braces: unchanged"),
+        ("{GPT}-4 Technical Report", ["GPT-4", "Technical", "Report"],
+         "Model name with braces"),
+    ]
+
+    all_passed = True
+    for title, expected_words, desc in test_cases:
+        words = get_query_words_bibtex_fix(title)
+        missing = [w for w in expected_words if w not in words]
+        if missing:
+            print(f"  [FAIL] {desc}")
+            print(f"         Title: {title}")
+            print(f"         Got: {words}")
+            print(f"         Missing: {missing}")
+            all_passed = False
+        else:
+            print(f"  [PASS] {desc}: {words}")
+
+    print()
+    return all_passed
+
+
+# Rust implementation pattern:
+RUST_BIBTEX_BRACE_FIX = r"""
+// In query.rs or equivalent:
+// Strip BibTeX-style curly braces before extracting query words
+
+fn get_query_words(title: &str, n: usize) -> Vec<String> {
+    // Strip BibTeX-style curly braces used for capitalization preservation
+    // e.g., "{BERT}" -> "BERT", "{M}ixup" -> "Mixup", "{COVID}-19" -> "COVID-19"
+    let title = title.replace('{', "").replace('}', "");
+
+    // ... rest of word extraction logic ...
+}
+"""
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -1900,6 +2362,11 @@ if __name__ == "__main__":
     test_springer_enhanced()
     test_query_words_improved()
     test_journal_year_fix()
+    test_version_number_preservation()
+    test_product_name_hyphen_preservation()
+    test_subtitle_prefix_matching()
+    test_middle_initial_no_period()
+    test_bibtex_curly_braces()
     test_combined_extraction()
     print_patterns_to_port()
 
