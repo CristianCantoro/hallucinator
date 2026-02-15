@@ -9,6 +9,59 @@ use hallucinator_pdf::ExtractionResult;
 
 use crate::tui_event::BackendEvent;
 
+/// Remap progress event indices from the filtered (checkable-only) vec back to
+/// the full all-refs vec, so the TUI's ref_states (which includes skipped refs)
+/// receives updates at the correct positions.
+fn remap_progress_index(event: ProgressEvent, index_map: &[usize]) -> ProgressEvent {
+    match event {
+        ProgressEvent::Checking {
+            index,
+            total,
+            title,
+        } => ProgressEvent::Checking {
+            index: index_map.get(index).copied().unwrap_or(index),
+            total,
+            title,
+        },
+        ProgressEvent::Result {
+            index,
+            total,
+            result,
+        } => ProgressEvent::Result {
+            index: index_map.get(index).copied().unwrap_or(index),
+            total,
+            result,
+        },
+        ProgressEvent::Warning {
+            index,
+            total,
+            title,
+            failed_dbs,
+            message,
+        } => ProgressEvent::Warning {
+            index: index_map.get(index).copied().unwrap_or(index),
+            total,
+            title,
+            failed_dbs,
+            message,
+        },
+        ProgressEvent::DatabaseQueryComplete {
+            paper_index,
+            ref_index,
+            db_name,
+            status,
+            elapsed,
+        } => ProgressEvent::DatabaseQueryComplete {
+            paper_index,
+            ref_index: index_map.get(ref_index).copied().unwrap_or(ref_index),
+            db_name,
+            status,
+            elapsed,
+        },
+        other => other,
+    }
+}
+
 /// Run batch validation with paper indices starting at `offset`.
 ///
 /// Spawns `max_concurrent_papers` worker tasks that pull from a shared work
@@ -113,19 +166,37 @@ async fn process_single_paper(
     };
 
     let skip_stats = extraction.skip_stats.clone();
-    let refs = extraction.references;
-    let ref_titles: Vec<String> = refs
+    let all_refs = extraction.references;
+    let ref_titles: Vec<String> = all_refs
         .iter()
         .map(|r| r.title.clone().unwrap_or_default())
         .collect();
 
+    // Count only non-skipped refs for the ref_count (used for stats/progress)
+    let checkable_count = all_refs.iter().filter(|r| r.skip_reason.is_none()).count();
+
     let _ = tx.send(BackendEvent::ExtractionComplete {
         paper_index,
-        ref_count: refs.len(),
+        ref_count: checkable_count,
         ref_titles,
-        references: refs.clone(),
+        references: all_refs.clone(),
         skip_stats,
     });
+
+    // Build a mapping from filtered (checkable) index → original all_refs index,
+    // so that progress events use indices into the full ref_states array.
+    let index_map: Vec<usize> = all_refs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.skip_reason.is_none())
+        .map(|(i, _)| i)
+        .collect();
+
+    // Filter to only checkable refs for validation
+    let refs: Vec<_> = all_refs
+        .into_iter()
+        .filter(|r| r.skip_reason.is_none())
+        .collect();
 
     if refs.is_empty() {
         let _ = tx.send(BackendEvent::PaperComplete {
@@ -138,9 +209,11 @@ async fn process_single_paper(
     // Build per-paper config
     let paper_config = (*config).clone();
 
-    // Bridge sync progress callback → async channel via unbounded send
+    // Bridge sync progress callback → async channel via unbounded send.
+    // Remap the checker's filtered indices back to the full ref_states indices.
     let tx_progress = tx.clone();
     let progress_cb = move |event: ProgressEvent| {
+        let event = remap_progress_index(event, &index_map);
         let _ = tx_progress.send(BackendEvent::Progress {
             paper_index,
             event: Box::new(event),
@@ -233,8 +306,7 @@ pub fn open_dblp_db(
 ) -> anyhow::Result<Arc<Mutex<hallucinator_dblp::DblpDatabase>>> {
     if !path.exists() {
         anyhow::bail!(
-            "Offline DBLP database not found at {}. Use hallucinator-cli --update-dblp={} to build it.",
-            path.display(),
+            "Offline DBLP database not found at {}. Run 'hallucinator-tui update-dblp' to build it.",
             path.display()
         );
     }

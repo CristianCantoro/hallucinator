@@ -8,6 +8,8 @@ pub enum RefPhase {
     #[allow(dead_code)] // used in verdict_label display, constructed when retry tracking is wired
     Retrying,
     Done,
+    /// Reference was skipped during extraction (URL-only, short title, etc.).
+    Skipped(String),
 }
 
 /// Reason a user marked a reference as a false positive.
@@ -21,17 +23,20 @@ pub enum FpReason {
     AllTimedOut,
     /// User personally knows this reference is real.
     KnownGood,
+    /// Non-academic source (RFC, legal document, news article, etc.).
+    NonAcademic,
 }
 
 impl FpReason {
-    /// Cycle: None → BrokenParse → ExistsElsewhere → AllTimedOut → KnownGood → None.
+    /// Cycle: None → BrokenParse → ExistsElsewhere → AllTimedOut → KnownGood → NonAcademic → None.
     pub fn cycle(current: Option<FpReason>) -> Option<FpReason> {
         match current {
             None => Some(FpReason::BrokenParse),
             Some(FpReason::BrokenParse) => Some(FpReason::ExistsElsewhere),
             Some(FpReason::ExistsElsewhere) => Some(FpReason::AllTimedOut),
             Some(FpReason::AllTimedOut) => Some(FpReason::KnownGood),
-            Some(FpReason::KnownGood) => None,
+            Some(FpReason::KnownGood) => Some(FpReason::NonAcademic),
+            Some(FpReason::NonAcademic) => None,
         }
     }
 
@@ -42,6 +47,7 @@ impl FpReason {
             FpReason::ExistsElsewhere => "GS",
             FpReason::AllTimedOut => "timeout",
             FpReason::KnownGood => "known",
+            FpReason::NonAcademic => "N/A",
         }
     }
 
@@ -52,6 +58,7 @@ impl FpReason {
             FpReason::ExistsElsewhere => "Found on Google Scholar / other source",
             FpReason::AllTimedOut => "All databases timed out",
             FpReason::KnownGood => "User verified as real",
+            FpReason::NonAcademic => "Non-academic source (RFC, legal, news, etc.)",
         }
     }
 
@@ -62,6 +69,7 @@ impl FpReason {
             FpReason::ExistsElsewhere => "exists_elsewhere",
             FpReason::AllTimedOut => "all_timed_out",
             FpReason::KnownGood => "known_good",
+            FpReason::NonAcademic => "non_academic",
         }
     }
 
@@ -72,6 +80,7 @@ impl FpReason {
             "exists_elsewhere" => Some(FpReason::ExistsElsewhere),
             "all_timed_out" => Some(FpReason::AllTimedOut),
             "known_good" => Some(FpReason::KnownGood),
+            "non_academic" => Some(FpReason::NonAcademic),
             _ => None,
         }
     }
@@ -86,6 +95,14 @@ pub struct RefState {
     pub result: Option<ValidationResult>,
     /// Why the user marked this reference as a false positive, or None if not overridden.
     pub fp_reason: Option<FpReason>,
+    /// Raw citation text from extraction (always available, even for skipped refs).
+    pub raw_citation: String,
+    /// Authors parsed during extraction.
+    pub authors: Vec<String>,
+    /// DOI extracted during parsing.
+    pub doi: Option<String>,
+    /// arXiv ID extracted during parsing.
+    pub arxiv_id: Option<String>,
 }
 
 impl RefState {
@@ -98,12 +115,21 @@ impl RefState {
         if let Some(reason) = self.fp_reason {
             return format!("\u{2713} Safe ({})", reason.short_label());
         }
+        if let RefPhase::Skipped(reason) = &self.phase {
+            return match reason.as_str() {
+                "url_only" => "(skipped: URL-only)".to_string(),
+                "short_title" => "(skipped: short title)".to_string(),
+                "no_title" => "(skipped: no title)".to_string(),
+                other => format!("(skipped: {})", other),
+            };
+        }
         match &self.result {
             None => match self.phase {
                 RefPhase::Pending => "\u{2014}".to_string(),
                 RefPhase::Checking => "...".to_string(),
                 RefPhase::Retrying => "retrying...".to_string(),
                 RefPhase::Done => "\u{2014}".to_string(),
+                RefPhase::Skipped(_) => unreachable!(),
             },
             Some(r) => match r.status {
                 Status::Verified => {
@@ -120,6 +146,9 @@ impl RefState {
     }
 
     pub fn source_label(&self) -> &str {
+        if matches!(self.phase, RefPhase::Skipped(_)) {
+            return "\u{2014}";
+        }
         match &self.result {
             Some(r) => r.source.as_deref().unwrap_or("\u{2014}"),
             None => "\u{2014}",

@@ -1,12 +1,13 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 use hallucinator_core::{DbStatus, Status};
 
 use crate::app::App;
+use crate::model::paper::RefPhase;
 use crate::theme::Theme;
 use crate::view::truncate;
 
@@ -35,7 +36,7 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         ),
         Span::styled(" > ", Style::default().fg(theme.dim)),
         Span::styled(
-            format!("#{} {}", ref_index + 1, title_short),
+            format!("#{} {}", rs.index + 1, title_short),
             Style::default().fg(theme.text),
         ),
     ]);
@@ -58,23 +59,40 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         lines.push(Line::from(""));
     }
 
+    // Skipped reference banner
+    if let RefPhase::Skipped(reason) = &rs.phase {
+        let reason_desc = match reason.as_str() {
+            "url_only" => "URL-only (non-academic URL)",
+            "short_title" => "Short title (fewer than minimum words)",
+            "no_title" => "No title could be extracted",
+            other => other,
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  Skipped: {}", reason_desc),
+            Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+    }
+
     // CITATION section
     section_header(&mut lines, "CITATION", theme);
     labeled_line(&mut lines, "Title", &rs.title, theme);
 
-    if let Some(result) = &rs.result {
-        if !result.raw_citation.is_empty() {
-            labeled_line(&mut lines, "Raw Citation", &result.raw_citation, theme);
-        }
-        if !result.ref_authors.is_empty() {
-            labeled_line(
-                &mut lines,
-                "Ref Authors",
-                &result.ref_authors.join(", "),
-                theme,
-            );
-        }
+    // Show raw citation and authors from RefState (always available, even for skipped refs)
+    if !rs.raw_citation.is_empty() {
+        labeled_line(&mut lines, "Raw Citation", &rs.raw_citation, theme);
+    }
+    if !rs.authors.is_empty() {
+        labeled_line(&mut lines, "Authors", &rs.authors.join(", "), theme);
+    }
+    if let Some(doi) = &rs.doi {
+        labeled_line(&mut lines, "DOI", doi, theme);
+    }
+    if let Some(arxiv) = &rs.arxiv_id {
+        labeled_line(&mut lines, "arXiv ID", arxiv, theme);
+    }
 
+    if let Some(result) = &rs.result {
         lines.push(Line::from(""));
 
         // VALIDATION section
@@ -255,37 +273,37 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
         }
 
         // RETRACTION section
-        if let Some(retraction) = &result.retraction_info {
-            if retraction.is_retracted {
-                lines.push(Line::from(""));
-                // Heavy box border for retraction
-                lines.push(Line::from(Span::styled(
+        if let Some(retraction) = &result.retraction_info
+            && retraction.is_retracted
+        {
+            lines.push(Line::from(""));
+            // Heavy box border for retraction
+            lines.push(Line::from(Span::styled(
                     "  \u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}",
                     Style::default().fg(theme.retracted),
                 )));
+            lines.push(Line::from(Span::styled(
+                "  \u{2551} \u{26A0} WARNING: This paper has been retracted!  \u{2551}",
+                Style::default()
+                    .fg(theme.retracted)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            if let Some(rdoi) = &retraction.retraction_doi {
                 lines.push(Line::from(Span::styled(
-                    "  \u{2551} \u{26A0} WARNING: This paper has been retracted!  \u{2551}",
-                    Style::default()
-                        .fg(theme.retracted)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                if let Some(rdoi) = &retraction.retraction_doi {
-                    lines.push(Line::from(Span::styled(
-                        format!("  \u{2551} DOI: {:<38}\u{2551}", rdoi),
-                        Style::default().fg(theme.retracted),
-                    )));
-                }
-                if let Some(rsrc) = &retraction.retraction_source {
-                    lines.push(Line::from(Span::styled(
-                        format!("  \u{2551} Source: {:<35}\u{2551}", rsrc),
-                        Style::default().fg(theme.retracted),
-                    )));
-                }
-                lines.push(Line::from(Span::styled(
-                    "  \u{255A}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255D}",
+                    format!("  \u{2551} DOI: {:<38}\u{2551}", rdoi),
                     Style::default().fg(theme.retracted),
                 )));
             }
+            if let Some(rsrc) = &retraction.retraction_source {
+                lines.push(Line::from(Span::styled(
+                    format!("  \u{2551} Source: {:<35}\u{2551}", rsrc),
+                    Style::default().fg(theme.retracted),
+                )));
+            }
+            lines.push(Line::from(Span::styled(
+                    "  \u{255A}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255D}",
+                    Style::default().fg(theme.retracted),
+                )));
         }
 
         // FAILED DATABASES section
@@ -298,6 +316,15 @@ pub fn render_in(f: &mut Frame, app: &App, paper_index: usize, ref_index: usize,
                     Style::default().fg(theme.not_found),
                 )));
             }
+        }
+    } else if matches!(rs.phase, RefPhase::Skipped(_)) {
+        // Skipped refs: show a search link if we have a title
+        if !rs.title.is_empty() {
+            lines.push(Line::from(""));
+            section_header(&mut lines, "LINKS", theme);
+            let scholar_query = encode_url_param(&rs.title);
+            let scholar_url = format!("https://scholar.google.com/scholar?q={}", scholar_query);
+            url_line(&mut lines, "Google Scholar", &scholar_url, theme);
         }
     } else {
         lines.push(Line::from(""));

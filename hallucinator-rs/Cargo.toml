@@ -7,14 +7,21 @@ members = [
     "crates/hallucinator-dblp",
     "crates/hallucinator-acl",
     "crates/hallucinator-cli",
-    "crates/hallucinator-web",
     "crates/hallucinator-tui",
+]
+exclude = [
+    # Python bindings are built separately via maturin; exclude from workspace
+    # to avoid pyo3 compile errors when the system Python version exceeds what
+    # pyo3 supports (e.g. Python 3.14 on macOS CI runners).
     "crates/hallucinator-python",
+    # Web server is not distributed as a binary; exclude to avoid compiling
+    # its dependencies (axum, tower, etc.) during dist builds.
+    "crates/hallucinator-web",
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
-edition = "2021"
+version = "0.1.0-alpha.2"
+edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/gianlucasb/hallucinator"
 

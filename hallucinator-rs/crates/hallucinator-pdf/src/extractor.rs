@@ -4,8 +4,8 @@ use regex::Regex;
 use std::path::Path;
 
 use crate::config::PdfParsingConfig;
-use crate::{authors, identifiers, section, text_processing, title};
 use crate::{ExtractionResult, PdfError, Reference, SkipStats};
+use crate::{authors, identifiers, section, text_processing, title};
 
 /// A configurable PDF reference extraction pipeline.
 ///
@@ -86,14 +86,29 @@ impl PdfExtractor {
         let mut references = Vec::new();
         let mut previous_authors: Vec<String> = Vec::new();
 
-        for ref_text in &raw_refs {
+        for (raw_idx, ref_text) in raw_refs.iter().enumerate() {
             let parsed = parse_single_reference(ref_text, &previous_authors, &self.config);
             match parsed {
-                ParsedRef::Skip(reason) => match reason {
-                    SkipReason::UrlOnly => stats.url_only += 1,
-                    SkipReason::ShortTitle => stats.short_title += 1,
-                },
-                ParsedRef::Ref(r) => {
+                ParsedRef::Skip(reason, raw_citation, title) => {
+                    match reason {
+                        SkipReason::UrlOnly => stats.url_only += 1,
+                        SkipReason::ShortTitle => stats.short_title += 1,
+                    }
+                    references.push(Reference {
+                        raw_citation,
+                        title,
+                        authors: vec![],
+                        doi: None,
+                        arxiv_id: None,
+                        original_number: raw_idx + 1,
+                        skip_reason: Some(match reason {
+                            SkipReason::UrlOnly => "url_only".to_string(),
+                            SkipReason::ShortTitle => "short_title".to_string(),
+                        }),
+                    });
+                }
+                ParsedRef::Ref(mut r) => {
+                    r.original_number = raw_idx + 1; // 1-based
                     if r.authors.is_empty() {
                         stats.no_authors += 1;
                     } else {
@@ -114,7 +129,8 @@ impl PdfExtractor {
 /// Result of parsing a single reference.
 pub enum ParsedRef {
     Ref(Reference),
-    Skip(SkipReason),
+    /// A skipped reference: reason, raw_citation, and optional title.
+    Skip(SkipReason, String, Option<String>),
 }
 
 /// Reason a reference was skipped.
@@ -150,7 +166,19 @@ fn parse_single_reference(
     if (URL_RE.is_match(&ref_text) || BROKEN_URL_RE.is_match(&ref_text))
         && !ACADEMIC_URL_RE.is_match(&ref_text)
     {
-        return ParsedRef::Skip(SkipReason::UrlOnly);
+        // Still extract a title for display purposes even though we're skipping
+        let (extracted_title, from_quotes) =
+            title::extract_title_from_reference_with_config(&ref_text, config);
+        let cleaned_title = title::clean_title_with_config(&extracted_title, from_quotes, config);
+        let title = if cleaned_title.is_empty() {
+            None
+        } else {
+            Some(cleaned_title)
+        };
+
+        static WS_SKIP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+        let raw = WS_SKIP_RE.replace_all(&ref_text, " ").trim().to_string();
+        return ParsedRef::Skip(SkipReason::UrlOnly, raw, title);
     }
 
     // Extract title
@@ -160,7 +188,24 @@ fn parse_single_reference(
 
     if cleaned_title.is_empty() || cleaned_title.split_whitespace().count() < config.min_title_words
     {
-        return ParsedRef::Skip(SkipReason::ShortTitle);
+        // Short titles can still be real citations if we have strong signals:
+        // DOI, arXiv ID, quoted title, or venue/year markers in the raw text.
+        let has_strong_signal = !cleaned_title.is_empty()
+            && (doi.is_some()
+                || arxiv_id.is_some()
+                || from_quotes
+                || looks_like_citation(&ref_text));
+
+        if !has_strong_signal {
+            static WS_SKIP_RE2: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+            let raw = WS_SKIP_RE2.replace_all(&ref_text, " ").trim().to_string();
+            let title = if cleaned_title.is_empty() {
+                None
+            } else {
+                Some(cleaned_title)
+            };
+            return ParsedRef::Skip(SkipReason::ShortTitle, raw, title);
+        }
     }
 
     // Extract authors
@@ -189,7 +234,30 @@ fn parse_single_reference(
         authors: ref_authors,
         doi,
         arxiv_id,
+        original_number: 0, // placeholder; overwritten by caller
+        skip_reason: None,
     })
+}
+
+/// Check whether raw citation text has structural signals of a real reference
+/// (venue markers, author-year patterns, journal metadata) even when the
+/// extracted title is very short.
+fn looks_like_citation(ref_text: &str) -> bool {
+    static VENUE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b(?:In\s+Proceedings|Proc\.|Conference|Workshop|Symposium|IEEE|ACM|USENIX|AAAI|ICML|NeurIPS|ICLR|arXiv\s+preprint|Journal\s+of|Transactions\s+on)\b").unwrap()
+    });
+    static YEAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:19|20)\d{2}").unwrap());
+    static AUTHOR_YEAR_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[A-Z][a-z]+.*(?:19|20)\d{2}").unwrap());
+    static VOL_ISSUE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d+\s*\(\d+\)").unwrap());
+
+    let has_venue = VENUE_RE.is_match(ref_text);
+    let has_year = YEAR_RE.is_match(ref_text);
+    let has_author_year = AUTHOR_YEAR_RE.is_match(ref_text);
+    let has_vol_issue = VOL_ISSUE_RE.is_match(ref_text);
+
+    // Need at least two signals: venue+year, author+year+volume, etc.
+    (has_venue && has_year) || (has_author_year && has_vol_issue)
 }
 
 #[cfg(test)]
@@ -225,7 +293,7 @@ mod tests {
                 assert!(r.title.unwrap().contains("Detecting Fake References"));
                 assert!(!r.authors.is_empty());
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference, got skip"),
+            ParsedRef::Skip(..) => panic!("Expected a reference, got skip"),
         }
     }
 
@@ -259,8 +327,8 @@ mod tests {
         let ref_text = "See https://github.com/some/repo for details about the implementation.";
         let parsed = ext.parse_reference(ref_text, &[]);
         match parsed {
-            ParsedRef::Skip(SkipReason::UrlOnly) => {}    // expected
-            ParsedRef::Skip(SkipReason::ShortTitle) => {} // also acceptable
+            ParsedRef::Skip(SkipReason::UrlOnly, _, _) => {} // expected
+            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // also acceptable
             ParsedRef::Ref(r) => panic!("URL-only ref should be skipped, got: {:?}", r.title),
         }
 
@@ -269,7 +337,7 @@ mod tests {
         let parsed2 = ext.parse_reference(academic_ref, &[]);
         match parsed2 {
             ParsedRef::Ref(_) => {} // expected — doi.org is academic
-            ParsedRef::Skip(_) => panic!("Academic URL ref should not be skipped"),
+            ParsedRef::Skip(..) => panic!("Academic URL ref should not be skipped"),
         }
     }
 
@@ -343,14 +411,15 @@ mod tests {
 
     #[test]
     fn test_custom_min_title_words() {
-        // A reference whose title is exactly 3 words
-        let ref_text = r#"J. Smith, "Three Word Title," in Proc. IEEE, 2023."#;
+        // A reference with a 3-word title and no strong citation signals
+        // (no DOI, no arXiv, no quotes, no venue/year combo)
+        let ref_text = "Smith, J. Three Word Title";
 
         // Default min_title_words=4 → should be SKIPPED (3 < 4)
         let ext_default = PdfExtractor::new();
         let parsed_default = ext_default.parse_reference(ref_text, &[]);
         match parsed_default {
-            ParsedRef::Skip(SkipReason::ShortTitle) => {} // expected
+            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // expected
             _ => panic!("3-word title should be skipped with default min_title_words=4"),
         }
 
@@ -365,19 +434,20 @@ mod tests {
             ParsedRef::Ref(r) => {
                 assert!(r.title.as_ref().unwrap().contains("Three Word Title"));
             }
-            ParsedRef::Skip(_) => panic!("3-word title should pass with min_title_words=3"),
+            ParsedRef::Skip(..) => panic!("3-word title should pass with min_title_words=3"),
         }
 
         // With min_title_words = 10, a normal title should be skipped
+        // (no strong signals to override the threshold)
         let config_strict = PdfParsingConfigBuilder::new()
             .min_title_words(10)
             .build()
             .unwrap();
         let ext_strict = PdfExtractor::with_config(config_strict);
-        let long_ref = r#"J. Smith, "A Five Word Paper Title Here," in Proc. IEEE, 2023."#;
+        let long_ref = "Smith, J. A Five Word Paper Title Here";
         let parsed2 = ext_strict.parse_reference(long_ref, &[]);
         match parsed2 {
-            ParsedRef::Skip(SkipReason::ShortTitle) => {} // expected
+            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // expected
             _ => panic!("5-word title should be skipped with min_title_words=10"),
         }
     }
@@ -400,7 +470,7 @@ mod tests {
                     r.authors.len()
                 );
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference"),
+            ParsedRef::Skip(..) => panic!("Expected a reference"),
         }
     }
 
@@ -438,7 +508,7 @@ mod tests {
                     r.title.unwrap(),
                 );
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference"),
+            ParsedRef::Skip(..) => panic!("Expected a reference"),
         }
     }
 
@@ -454,7 +524,147 @@ mod tests {
             ParsedRef::Ref(r) => {
                 assert_eq!(r.authors, prev_authors);
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference"),
+            ParsedRef::Skip(..) => panic!("Expected a reference"),
+        }
+    }
+
+    // ── looks_like_citation tests ──
+
+    #[test]
+    fn test_looks_like_citation_venue_and_year() {
+        // Venue + year → true
+        assert!(looks_like_citation(
+            "Smith, J. 2020. XYZ. In Proceedings of ACM CHI."
+        ));
+        assert!(looks_like_citation("Jones, K. Foo. Proc. IEEE, 2019."));
+    }
+
+    #[test]
+    fn test_looks_like_citation_author_year_vol_issue() {
+        // Author-year + volume(issue) → true
+        assert!(looks_like_citation("Smith 2020. Bar. 15(3), pp. 1-10."));
+    }
+
+    #[test]
+    fn test_looks_like_citation_not_enough_signals() {
+        // Only a year, no venue or vol/issue → false
+        assert!(!looks_like_citation("Smith 2020. Some text here."));
+        // No year at all → false
+        assert!(!looks_like_citation("Smith. Some random text."));
+    }
+
+    // ── Strong signal rescue for short titles ──
+
+    #[test]
+    fn test_short_title_rescued_by_doi() {
+        let ext = PdfExtractor::new();
+        // 3-word quoted title with DOI → should NOT be skipped despite short title
+        let ref_text = r#"Smith, J. "Word Affect Intensities." doi:10.1234/test.2020"#;
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(r) => {
+                assert!(r.doi.is_some(), "Should have extracted DOI");
+            }
+            ParsedRef::Skip(..) => panic!("Short title with DOI should be rescued"),
+        }
+    }
+
+    #[test]
+    fn test_short_title_rescued_by_arxiv() {
+        let ext = PdfExtractor::new();
+        // 3-word title but has arXiv ID → should NOT be skipped
+        let ref_text = "Smith, J. Word Affect Intensities. arXiv:1704.08798";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(r) => {
+                assert!(r.arxiv_id.is_some(), "Should have extracted arXiv ID");
+            }
+            ParsedRef::Skip(..) => panic!("Short title with arXiv should be rescued"),
+        }
+    }
+
+    #[test]
+    fn test_short_title_rescued_by_venue() {
+        let ext = PdfExtractor::new();
+        // 3-word title with venue + year signals → should NOT be skipped
+        let ref_text = "Smith, J. 2020. Three Word Title. In Proceedings of ACM CHI. New York.";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(_) => {} // expected
+            ParsedRef::Skip(..) => {
+                panic!("Short title with venue+year signals should be rescued")
+            }
+        }
+    }
+
+    #[test]
+    fn test_short_title_not_rescued_without_signals() {
+        let ext = PdfExtractor::new();
+        // 3-word title with no strong signals → should be skipped
+        let ref_text = "Smith, J. Three Word Title";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {} // expected
+            _ => panic!("Short title without signals should be skipped"),
+        }
+    }
+
+    // ── URL-only skip with title extraction ──
+
+    #[test]
+    fn test_url_only_skip_preserves_title() {
+        let ext = PdfExtractor::new();
+        // A reference with a non-academic URL that also has a parseable title
+        let ref_text =
+            "Smith, J. 2023. Some Interesting Report About Software. https://example.com/report";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Skip(SkipReason::UrlOnly, _, title) => {
+                assert!(
+                    title.is_some(),
+                    "URL-only skip should still extract a title"
+                );
+            }
+            ParsedRef::Ref(_) => panic!("Non-academic URL should be skipped"),
+            ParsedRef::Skip(SkipReason::ShortTitle, _, _) => {
+                panic!("Should be UrlOnly skip, not ShortTitle")
+            }
+        }
+    }
+
+    #[test]
+    fn test_two_word_title_rescued_by_venue() {
+        // "Translation-based Recommendation" is 2 words — below min_title_words=4.
+        // But it has venue ("Proceedings", "ACM", "Conference") + year → should be rescued.
+        let ext = PdfExtractor::new();
+        let ref_text = "He, R.; Kang, W.-C.; and McAuley, J. 2017. Translation-based Recommendation. Proceedings of the Eleventh ACM Conference on Recommender Systems";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(r) => {
+                assert_eq!(r.title.as_deref(), Some("Translation-based Recommendation"));
+            }
+            ParsedRef::Skip(..) => {
+                panic!("2-word title with venue+year signals should be rescued")
+            }
+        }
+    }
+
+    #[test]
+    fn test_disambiguated_year_suffix() {
+        // AAAI year "2022b" — letter suffix for multiple papers by same author in one year
+        let ext = PdfExtractor::new();
+        let ref_text = "Feng, S.; and Luo, M. 2022b. TwiBot-22: Towards Graph-Based Twitter Bot Detection. In Proceedings of NeurIPS, 35254-35269";
+        let parsed = ext.parse_reference(ref_text, &[]);
+        match parsed {
+            ParsedRef::Ref(r) => {
+                let title = r.title.unwrap();
+                assert!(
+                    title.contains("TwiBot-22"),
+                    "Title should be the paper title, not the year. Got: {}",
+                    title
+                );
+            }
+            ParsedRef::Skip(..) => panic!("Should not be skipped"),
         }
     }
 
@@ -478,7 +688,7 @@ mod tests {
                     title,
                 );
             }
-            ParsedRef::Skip(_) => panic!("Expected a reference"),
+            ParsedRef::Skip(..) => panic!("Expected a reference"),
         }
     }
 }

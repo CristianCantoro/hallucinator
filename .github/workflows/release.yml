@@ -214,19 +214,33 @@ jobs:
               continue
             fi
 
-            # Re-archive with signed binary and update checksum
+            # Re-archive with signed binary and update checksums
             (cd "$tmpdir" && tar cf - *) | xz > "$archive"
-            shasum -a 256 "$archive" | awk '{print $1}' > "${archive}.sha256"
+            new_hash=$(shasum -a 256 "$archive" | awk '{print $1}')
+            echo "$new_hash" > "${archive}.sha256"
+
+            # Update the checksum in dist-manifest.json so the installer verifies correctly.
+            # The .checksums.sha256 field is what gets baked into installer scripts
+            # by build-global-artifacts; .checksum is just a filename reference.
+            archive_name=$(basename "$archive")
+            jq --arg name "$archive_name" --arg hash "$new_hash" \
+              '(.artifacts[] | select(.name == $name) | .checksums.sha256) = $hash' \
+              dist-manifest.json > dist-manifest.json.tmp && mv dist-manifest.json.tmp dist-manifest.json
 
             # Submit for notarization and wait
             zip_path="$RUNNER_TEMP/notarize-$(basename "$archive" .tar.xz).zip"
             ditto -c -k "$tmpdir" "$zip_path"
             echo "Submitting for notarization..."
-            xcrun notarytool submit "$zip_path" \
+            # TODO: re-enable --wait once Apple's notary service recovers
+            # (broken since early Feb 2026, submissions stuck "In Progress")
+            if xcrun notarytool submit "$zip_path" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_APP_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait
+              --team-id "$APPLE_TEAM_ID"; then
+              echo "Notarization submitted (not waiting — Apple notary service is degraded)"
+            else
+              echo "::warning::Notarization submission failed for $(basename "$archive") — binary is still codesigned"
+            fi
 
             rm -f "$zip_path"
             rm -rf "$tmpdir"
@@ -244,8 +258,8 @@ jobs:
         run: |
           # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          # Prefix paths with hallucinator-rs/ so upload-artifact (which runs at repo root) can find them
-          dist print-upload-files-from-manifest --manifest dist-manifest.json | sed 's|^|hallucinator-rs/|' >> "$GITHUB_OUTPUT"
+          # dist outputs absolute paths; use them directly (upload-artifact handles absolute paths)
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
@@ -293,7 +307,8 @@ jobs:
 
           # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          jq --raw-output ".upload_files[]" dist-manifest.json | sed 's|^|hallucinator-rs/|' >> "$GITHUB_OUTPUT"
+          # dist outputs absolute paths; use them directly
+          jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
@@ -349,7 +364,8 @@ jobs:
           # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: hallucinator-rs/dist-manifest.json
-      # Create a GitHub Release while uploading all files to it
+      # dist host can't create GitHub Releases from the subdirectory workspace,
+      # so we create the release ourselves using the manifest metadata.
       - name: "Download GitHub Artifacts"
         uses: actions/download-artifact@v4
         with:
@@ -360,6 +376,8 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+          echo "Release assets:"
+          ls -la artifacts/
       - name: Create GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"

@@ -14,7 +14,7 @@ use crate::model::activity::{ActiveQuery, ActivityState};
 use crate::model::config::ConfigState;
 use crate::model::paper::{FpReason, PaperFilter, PaperSortOrder, RefPhase, RefState};
 use crate::model::queue::{
-    filtered_indices, PaperPhase, PaperState, PaperVerdict, QueueFilter, SortOrder,
+    PaperPhase, PaperState, PaperVerdict, QueueFilter, SortOrder, filtered_indices,
 };
 use crate::theme::Theme;
 use crate::tui_event::{BackendCommand, BackendEvent};
@@ -37,6 +37,18 @@ pub enum InputMode {
     Normal,
     Search,
     TextInput,
+}
+
+/// Context for the file picker — determines what kind of file we're picking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilePickerContext {
+    /// Normal mode: selecting PDFs, .bbl, archives, etc.
+    AddFiles,
+    /// Selecting a .db/.sqlite file for a config database path.
+    SelectDatabase {
+        /// 0 = DBLP offline path, 1 = ACL offline path
+        config_item: usize,
+    },
 }
 
 /// State for the file picker screen.
@@ -65,6 +77,7 @@ pub struct FileEntry {
     pub is_bib: bool,
     pub is_archive: bool,
     pub is_json: bool,
+    pub is_db: bool,
 }
 
 impl FilePickerState {
@@ -96,6 +109,7 @@ impl FilePickerState {
                 is_bib: false,
                 is_archive: false,
                 is_json: false,
+                is_db: false,
             });
         }
 
@@ -122,6 +136,7 @@ impl FilePickerState {
                         is_bib: false,
                         is_archive: false,
                         is_json: false,
+                        is_db: false,
                     });
                 } else {
                     let ext = path.extension().and_then(|e| e.to_str());
@@ -130,6 +145,9 @@ impl FilePickerState {
                     let is_bib = ext.map(|e| e.eq_ignore_ascii_case("bib")).unwrap_or(false);
                     let is_archive = hallucinator_pdf::archive::is_archive_path(&path);
                     let is_json = ext.map(|e| e.eq_ignore_ascii_case("json")).unwrap_or(false);
+                    let is_db = ext
+                        .map(|e| e.eq_ignore_ascii_case("db") || e.eq_ignore_ascii_case("sqlite"))
+                        .unwrap_or(false);
                     files.push(FileEntry {
                         name,
                         path,
@@ -139,6 +157,7 @@ impl FilePickerState {
                         is_bib,
                         is_archive,
                         is_json,
+                        is_db,
                     });
                 }
             }
@@ -155,27 +174,32 @@ impl FilePickerState {
         self.scroll_offset = 0;
     }
 
-    /// Toggle selection of the current entry (PDFs, .bbl, .bib files, archives, and .json results).
+    /// Toggle selection of the current entry (PDFs, .bbl, .bib files, archives, .json results, and .db/.sqlite).
     pub fn toggle_selected(&mut self) {
-        if let Some(entry) = self.entries.get(self.cursor) {
-            if entry.is_pdf || entry.is_bbl || entry.is_bib || entry.is_archive || entry.is_json {
-                if let Some(pos) = self.selected.iter().position(|p| p == &entry.path) {
-                    self.selected.remove(pos);
-                } else {
-                    self.selected.push(entry.path.clone());
-                }
+        if let Some(entry) = self.entries.get(self.cursor)
+            && (entry.is_pdf
+                || entry.is_bbl
+                || entry.is_bib
+                || entry.is_archive
+                || entry.is_json
+                || entry.is_db)
+        {
+            if let Some(pos) = self.selected.iter().position(|p| p == &entry.path) {
+                self.selected.remove(pos);
+            } else {
+                self.selected.push(entry.path.clone());
             }
         }
     }
 
     /// Enter the directory at cursor, or return false if not a directory.
     pub fn enter_directory(&mut self) -> bool {
-        if let Some(entry) = self.entries.get(self.cursor) {
-            if entry.is_dir {
-                self.current_dir = entry.path.clone();
-                self.refresh_entries();
-                return true;
-            }
+        if let Some(entry) = self.entries.get(self.cursor)
+            && entry.is_dir
+        {
+            self.current_dir = entry.path.clone();
+            self.refresh_entries();
+            return true;
         }
         false
     }
@@ -244,6 +268,8 @@ pub struct App {
     last_throughput_tick: usize,
     /// File picker state.
     pub file_picker: FilePickerState,
+    /// Context for the file picker (add files vs select database).
+    pub file_picker_context: FilePickerContext,
     /// Temp directory for extracted archive PDFs (auto-cleanup on drop).
     pub temp_dir: Option<tempfile::TempDir>,
     /// Archives waiting to be extracted (processed one per tick for UI responsiveness).
@@ -309,6 +335,7 @@ impl App {
             throughput_since_last: 0,
             last_throughput_tick: 0,
             file_picker: FilePickerState::new(),
+            file_picker_context: FilePickerContext::AddFiles,
             temp_dir: None,
             pending_archive_extractions: Vec::new(),
             extracting_archive: None,
@@ -322,7 +349,13 @@ impl App {
     }
 
     /// Recompute `queue_sorted` based on the current `sort_order`, filter, and search.
+    ///
+    /// Stabilises the cursor: if the paper previously under the cursor is still
+    /// present after filtering/sorting, the cursor follows it to its new row.
     pub fn recompute_sorted_indices(&mut self) {
+        // Remember which paper the cursor is currently on.
+        let prev_paper = self.queue_sorted.get(self.queue_cursor).copied();
+
         let mut indices = filtered_indices(&self.papers, self.queue_filter, &self.search_query);
         match self.sort_order {
             SortOrder::Original => {}
@@ -348,6 +381,18 @@ impl App {
             }
         }
         self.queue_sorted = indices;
+
+        // Restore cursor to the same paper if it's still in the list.
+        if let Some(paper_idx) = prev_paper {
+            if let Some(new_pos) = self.queue_sorted.iter().position(|&i| i == paper_idx) {
+                self.queue_cursor = new_pos;
+            } else {
+                // Paper was filtered out — clamp cursor.
+                self.queue_cursor = self
+                    .queue_cursor
+                    .min(self.queue_sorted.len().saturating_sub(1));
+            }
+        }
     }
 
     /// Get sorted/filtered reference indices for the paper view.
@@ -698,17 +743,18 @@ impl App {
         let got_new = !new_pdfs.is_empty();
 
         // If processing is already started, send newly extracted PDFs to backend
-        if self.processing_started && got_new {
-            if let Some(tx) = &self.backend_cmd_tx {
-                let starting_index = self.file_paths.len() - new_pdfs.len();
-                let config = self.build_config();
-                let _ = tx.send(BackendCommand::ProcessFiles {
-                    files: new_pdfs,
-                    starting_index,
-                    max_concurrent_papers: self.config_state.max_concurrent_papers,
-                    config: Box::new(config),
-                });
-            }
+        if self.processing_started
+            && got_new
+            && let Some(tx) = &self.backend_cmd_tx
+        {
+            let starting_index = self.file_paths.len() - new_pdfs.len();
+            let config = self.build_config();
+            let _ = tx.send(BackendCommand::ProcessFiles {
+                files: new_pdfs,
+                starting_index,
+                max_concurrent_papers: self.config_state.max_concurrent_papers,
+                config: Box::new(config),
+            });
         }
 
         if got_new {
@@ -882,6 +928,48 @@ impl App {
             return false;
         }
 
+        // Config "unsaved changes" prompt
+        if self.config_state.confirm_exit {
+            match action {
+                Action::Quit => {
+                    self.should_quit = true;
+                    return true;
+                }
+                // y key (mapped to CopyToClipboard in normal mode) = save & exit
+                Action::CopyToClipboard => {
+                    self.save_config();
+                    self.config_state.confirm_exit = false;
+                    if let Some(prev) = self.config_state.prev_screen.clone() {
+                        self.screen = prev;
+                    } else {
+                        self.screen = Screen::Queue;
+                    }
+                }
+                // n key (mapped to NextMatch in normal mode) = discard & exit
+                Action::NextMatch => {
+                    self.config_state.confirm_exit = false;
+                    self.config_state.dirty = false;
+                    if let Some(prev) = self.config_state.prev_screen.clone() {
+                        self.screen = prev;
+                    } else {
+                        self.screen = Screen::Queue;
+                    }
+                }
+                // Esc = cancel, stay on config
+                Action::NavigateBack => {
+                    self.config_state.confirm_exit = false;
+                }
+                Action::Tick => {
+                    self.tick = self.tick.wrapping_add(1);
+                }
+                Action::Resize(_w, h) => {
+                    self.visible_rows = (h as usize).saturating_sub(11);
+                }
+                _ => {}
+            }
+            return false;
+        }
+
         // Banner auto-dismiss on any key
         if self.screen == Screen::Banner {
             match action {
@@ -891,10 +979,10 @@ impl App {
                 }
                 Action::Tick => {
                     self.tick = self.tick.wrapping_add(1);
-                    if let Some(dismiss) = self.banner_dismiss_tick {
-                        if self.tick >= dismiss {
-                            self.dismiss_banner();
-                        }
+                    if let Some(dismiss) = self.banner_dismiss_tick
+                        && self.tick >= dismiss
+                    {
+                        self.dismiss_banner();
                     }
                 }
                 Action::Resize(_w, h) => {
@@ -915,11 +1003,35 @@ impl App {
                     return true;
                 }
                 Action::NavigateBack => {
-                    // Esc: add any selected files, go back to queue
-                    if !self.file_picker.selected.is_empty() {
-                        self.add_files_from_picker();
+                    match &self.file_picker_context {
+                        FilePickerContext::SelectDatabase { config_item } => {
+                            // In db mode: if a file was selected, write it to config
+                            let config_item = *config_item;
+                            if let Some(path) = self.file_picker.selected.first() {
+                                let canonical = path
+                                    .canonicalize()
+                                    .unwrap_or_else(|_| path.clone())
+                                    .display()
+                                    .to_string();
+                                if config_item == 0 {
+                                    self.config_state.dblp_offline_path = canonical;
+                                } else {
+                                    self.config_state.acl_offline_path = canonical;
+                                }
+                                self.config_state.dirty = true;
+                            }
+                            self.file_picker.selected.clear();
+                            self.file_picker_context = FilePickerContext::AddFiles;
+                            self.screen = Screen::Config;
+                        }
+                        FilePickerContext::AddFiles => {
+                            // Normal mode: add any selected files, go back to queue
+                            if !self.file_picker.selected.is_empty() {
+                                self.add_files_from_picker();
+                            }
+                            self.screen = Screen::Queue;
+                        }
                     }
-                    self.screen = Screen::Queue;
                 }
                 Action::MoveDown => {
                     let max = self.file_picker.entries.len().saturating_sub(1);
@@ -946,13 +1058,63 @@ impl App {
                     self.file_picker.cursor = self.file_picker.entries.len().saturating_sub(1);
                 }
                 Action::ToggleSafe => {
-                    // Space: toggle selection of current entry
-                    self.file_picker.toggle_selected();
+                    if matches!(
+                        self.file_picker_context,
+                        FilePickerContext::SelectDatabase { .. }
+                    ) {
+                        // In db mode: single-select, only .db files
+                        if let Some(entry) = self.file_picker.entries.get(self.file_picker.cursor)
+                            && entry.is_db
+                        {
+                            self.file_picker.selected.clear();
+                            self.file_picker.selected.push(entry.path.clone());
+                        }
+                    } else {
+                        // Normal mode: toggle selection of current entry
+                        self.file_picker.toggle_selected();
+                    }
                 }
                 Action::DrillIn => {
-                    // Enter on directory: open it. Enter on PDF: toggle selection.
-                    if !self.file_picker.enter_directory() {
-                        self.file_picker.toggle_selected();
+                    if matches!(
+                        self.file_picker_context,
+                        FilePickerContext::SelectDatabase { .. }
+                    ) {
+                        // In db mode: Enter on .db → select & return to config
+                        if let Some(entry) = self
+                            .file_picker
+                            .entries
+                            .get(self.file_picker.cursor)
+                            .cloned()
+                        {
+                            if entry.is_dir {
+                                self.file_picker.enter_directory();
+                            } else if entry.is_db {
+                                let canonical = entry
+                                    .path
+                                    .canonicalize()
+                                    .unwrap_or_else(|_| entry.path.clone())
+                                    .display()
+                                    .to_string();
+                                if let FilePickerContext::SelectDatabase { config_item } =
+                                    self.file_picker_context
+                                {
+                                    if config_item == 0 {
+                                        self.config_state.dblp_offline_path = canonical;
+                                    } else {
+                                        self.config_state.acl_offline_path = canonical;
+                                    }
+                                    self.config_state.dirty = true;
+                                }
+                                self.file_picker.selected.clear();
+                                self.file_picker_context = FilePickerContext::AddFiles;
+                                self.screen = Screen::Config;
+                            }
+                        }
+                    } else {
+                        // Normal mode: Enter on directory opens it, on file toggles selection
+                        if !self.file_picker.enter_directory() {
+                            self.file_picker.toggle_selected();
+                        }
                     }
                 }
                 Action::OpenConfig => {
@@ -986,10 +1148,20 @@ impl App {
                     let paper_idx = *paper_idx;
                     self.screen = Screen::Paper(paper_idx);
                 }
-                Screen::Paper(_) => {
+                Screen::Paper(paper_idx) => {
                     if !self.single_paper_mode {
+                        let paper_idx = *paper_idx;
                         self.screen = Screen::Queue;
                         self.paper_cursor = 0;
+                        // Restore cursor to the same paper even if sort order changed
+                        self.queue_cursor = self
+                            .queue_sorted
+                            .iter()
+                            .position(|&i| i == paper_idx)
+                            .unwrap_or(
+                                self.queue_cursor
+                                    .min(self.queue_sorted.len().saturating_sub(1)),
+                            );
                     }
                 }
                 Screen::Queue => {
@@ -1004,10 +1176,16 @@ impl App {
                     self.config_state.edit_buffer.clear();
                     self.input_mode = InputMode::Normal;
 
-                    if let Some(prev) = self.config_state.prev_screen.clone() {
-                        self.screen = prev;
+                    if self.config_state.dirty && !self.config_state.confirm_exit {
+                        // Show "unsaved changes" prompt instead of exiting
+                        self.config_state.confirm_exit = true;
                     } else {
-                        self.screen = Screen::Queue;
+                        self.config_state.confirm_exit = false;
+                        if let Some(prev) = self.config_state.prev_screen.clone() {
+                            self.screen = prev;
+                        } else {
+                            self.screen = Screen::Queue;
+                        }
                     }
                 }
                 Screen::Banner | Screen::FilePicker => {}
@@ -1240,10 +1418,10 @@ impl App {
                         let indices = self.paper_ref_indices(idx);
                         if self.paper_cursor < indices.len() {
                             let ref_idx = indices[self.paper_cursor];
-                            if let Some(refs) = self.ref_states.get_mut(idx) {
-                                if let Some(rs) = refs.get_mut(ref_idx) {
-                                    rs.fp_reason = FpReason::cycle(rs.fp_reason);
-                                }
+                            if let Some(refs) = self.ref_states.get_mut(idx)
+                                && let Some(rs) = refs.get_mut(ref_idx)
+                            {
+                                rs.fp_reason = FpReason::cycle(rs.fp_reason);
                             }
                         }
                     }
@@ -1251,10 +1429,10 @@ impl App {
                         // Space on detail: cycle FP reason
                         let paper_idx = *paper_idx;
                         let ref_idx = *ref_idx;
-                        if let Some(refs) = self.ref_states.get_mut(paper_idx) {
-                            if let Some(rs) = refs.get_mut(ref_idx) {
-                                rs.fp_reason = FpReason::cycle(rs.fp_reason);
-                            }
+                        if let Some(refs) = self.ref_states.get_mut(paper_idx)
+                            && let Some(rs) = refs.get_mut(ref_idx)
+                        {
+                            rs.fp_reason = FpReason::cycle(rs.fp_reason);
                         }
                     }
                     Screen::Config => {
@@ -1279,7 +1457,36 @@ impl App {
                 }
             }
             Action::AddFiles => {
-                self.screen = Screen::FilePicker;
+                if self.screen == Screen::Config
+                    && self.config_state.section == crate::model::config::ConfigSection::Databases
+                    && self.config_state.item_cursor <= 1
+                {
+                    // Open file picker in database selection mode
+                    let config_item = self.config_state.item_cursor;
+                    self.file_picker_context = FilePickerContext::SelectDatabase { config_item };
+                    self.file_picker.selected.clear();
+
+                    // Navigate to the current path's parent if set
+                    let current_path = if config_item == 0 {
+                        &self.config_state.dblp_offline_path
+                    } else {
+                        &self.config_state.acl_offline_path
+                    };
+                    if !current_path.is_empty() {
+                        let p = PathBuf::from(current_path);
+                        if let Some(parent) = p.parent()
+                            && parent.is_dir()
+                        {
+                            self.file_picker.current_dir = parent.to_path_buf();
+                            self.file_picker.refresh_entries();
+                        }
+                    }
+
+                    self.screen = Screen::FilePicker;
+                } else if self.screen != Screen::Config {
+                    self.file_picker_context = FilePickerContext::AddFiles;
+                    self.screen = Screen::FilePicker;
+                }
             }
             Action::CopyToClipboard => {
                 if let Some(text) = self.get_copyable_text() {
@@ -1288,16 +1495,7 @@ impl App {
                 }
             }
             Action::SaveConfig => {
-                let file_cfg = crate::config_file::from_config_state(&self.config_state);
-                match crate::config_file::save_config(&file_cfg) {
-                    Ok(path) => {
-                        self.activity
-                            .log(format!("Config saved to {}", path.display()));
-                    }
-                    Err(e) => {
-                        self.activity.log(format!("Config save failed: {}", e));
-                    }
-                }
+                self.save_config();
             }
             Action::Retry => {
                 self.handle_retry_single();
@@ -1351,26 +1549,27 @@ impl App {
 
     /// Handle mouse click → row selection.
     fn handle_click(&mut self, _x: u16, y: u16) {
-        if let Some(table_area) = self.last_table_area {
-            if y >= table_area.y && y < table_area.y + table_area.height {
-                // Account for border (1) + header row (1) = offset 2 from table_area.y
-                let row_offset = 2u16;
-                if y >= table_area.y + row_offset {
-                    let clicked_row = (y - table_area.y - row_offset) as usize;
-                    match &self.screen {
-                        Screen::Queue => {
-                            if clicked_row < self.queue_sorted.len() {
-                                self.queue_cursor = clicked_row;
-                            }
+        if let Some(table_area) = self.last_table_area
+            && y >= table_area.y
+            && y < table_area.y + table_area.height
+        {
+            // Account for border (1) + header row (1) = offset 2 from table_area.y
+            let row_offset = 2u16;
+            if y >= table_area.y + row_offset {
+                let clicked_row = (y - table_area.y - row_offset) as usize;
+                match &self.screen {
+                    Screen::Queue => {
+                        if clicked_row < self.queue_sorted.len() {
+                            self.queue_cursor = clicked_row;
                         }
-                        Screen::Paper(idx) => {
-                            let indices = self.paper_ref_indices(*idx);
-                            if clicked_row < indices.len() {
-                                self.paper_cursor = clicked_row;
-                            }
-                        }
-                        _ => {}
                     }
+                    Screen::Paper(idx) => {
+                        let indices = self.paper_ref_indices(*idx);
+                        if clicked_row < indices.len() {
+                            self.paper_cursor = clicked_row;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1425,6 +1624,7 @@ impl App {
                         self.config_state.theme_name = "hacker".to_string();
                         self.theme = Theme::hacker();
                     }
+                    self.config_state.dirty = true;
                 }
                 1 => {
                     // Edit FPS
@@ -1463,6 +1663,7 @@ impl App {
                     let toggle_idx = self.config_state.item_cursor - 2;
                     if let Some((_, enabled)) = self.config_state.disabled_dbs.get_mut(toggle_idx) {
                         *enabled = !*enabled;
+                        self.config_state.dirty = true;
                     }
                 }
             }
@@ -1476,6 +1677,7 @@ impl App {
                         self.config_state.theme_name = "hacker".to_string();
                         self.theme = Theme::hacker();
                     }
+                    self.config_state.dirty = true;
                 }
             }
             _ => {}
@@ -1522,21 +1724,57 @@ impl App {
                 _ => {}
             },
             ConfigSection::Databases => match self.config_state.item_cursor {
-                0 => self.config_state.dblp_offline_path = buf,
-                1 => self.config_state.acl_offline_path = buf,
+                0 => {
+                    self.config_state.dblp_offline_path = if buf.is_empty() {
+                        buf
+                    } else {
+                        PathBuf::from(&buf)
+                            .canonicalize()
+                            .unwrap_or_else(|_| PathBuf::from(&buf))
+                            .display()
+                            .to_string()
+                    };
+                }
+                1 => {
+                    self.config_state.acl_offline_path = if buf.is_empty() {
+                        buf
+                    } else {
+                        PathBuf::from(&buf)
+                            .canonicalize()
+                            .unwrap_or_else(|_| PathBuf::from(&buf))
+                            .display()
+                            .to_string()
+                    };
+                }
                 _ => {}
             },
             ConfigSection::Display => {
-                if self.config_state.item_cursor == 1 {
-                    if let Ok(v) = buf.parse::<u32>() {
-                        self.config_state.fps = v.clamp(1, 120);
-                    }
+                if self.config_state.item_cursor == 1
+                    && let Ok(v) = buf.parse::<u32>()
+                {
+                    self.config_state.fps = v.clamp(1, 120);
                 }
             }
         }
+        self.config_state.dirty = true;
         self.config_state.editing = false;
         self.config_state.edit_buffer.clear();
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Save config to disk and clear the dirty flag.
+    fn save_config(&mut self) {
+        let file_cfg = crate::config_file::from_config_state(&self.config_state);
+        match crate::config_file::save_config(&file_cfg) {
+            Ok(path) => {
+                self.config_state.dirty = false;
+                self.activity
+                    .log(format!("Config saved to {}", path.display()));
+            }
+            Err(e) => {
+                self.activity.log(format!("Config save failed: {}", e));
+            }
+        }
     }
 
     /// Process a backend event and update model state.
@@ -1556,24 +1794,37 @@ impl App {
             } => {
                 if let Some(paper) = self.papers.get_mut(paper_index) {
                     paper.total_refs = ref_count;
-                    paper.init_results(ref_count);
+                    // Allocate result slots for ALL refs (including skipped) so
+                    // that remapped indices from the backend fit.
+                    paper.init_results(references.len());
                     paper.phase = PaperPhase::Checking;
-                }
-                if paper_index < self.paper_refs.len() {
-                    self.paper_refs[paper_index] = references;
                 }
                 if paper_index < self.ref_states.len() {
                     self.ref_states[paper_index] = ref_titles
                         .into_iter()
-                        .enumerate()
-                        .map(|(i, title)| RefState {
-                            index: i,
-                            title,
-                            phase: RefPhase::Pending,
-                            result: None,
-                            fp_reason: None,
+                        .zip(references.iter())
+                        .map(|(title, r)| {
+                            let phase = if let Some(reason) = &r.skip_reason {
+                                RefPhase::Skipped(reason.clone())
+                            } else {
+                                RefPhase::Pending
+                            };
+                            RefState {
+                                index: r.original_number.saturating_sub(1),
+                                title,
+                                phase,
+                                result: None,
+                                fp_reason: None,
+                                raw_citation: r.raw_citation.clone(),
+                                authors: r.authors.clone(),
+                                doi: r.doi.clone(),
+                                arxiv_id: r.arxiv_id.clone(),
+                            }
                         })
                         .collect();
+                }
+                if paper_index < self.paper_refs.len() {
+                    self.paper_refs[paper_index] = references;
                 }
             }
             BackendEvent::ExtractionFailed { paper_index, error } => {
@@ -1589,10 +1840,10 @@ impl App {
                 paper_index,
                 results: _,
             } => {
-                if let Some(paper) = self.papers.get_mut(paper_index) {
-                    if paper.phase != PaperPhase::ExtractionFailed {
-                        paper.phase = PaperPhase::Complete;
-                    }
+                if let Some(paper) = self.papers.get_mut(paper_index)
+                    && paper.phase != PaperPhase::ExtractionFailed
+                {
+                    paper.phase = PaperPhase::Complete;
                 }
             }
             BackendEvent::BatchComplete => {
@@ -1606,10 +1857,10 @@ impl App {
     fn handle_progress(&mut self, paper_index: usize, event: ProgressEvent) {
         match event {
             ProgressEvent::Checking { index, title, .. } => {
-                if let Some(refs) = self.ref_states.get_mut(paper_index) {
-                    if let Some(rs) = refs.get_mut(index) {
-                        rs.phase = RefPhase::Checking;
-                    }
+                if let Some(refs) = self.ref_states.get_mut(paper_index)
+                    && let Some(rs) = refs.get_mut(index)
+                {
+                    rs.phase = RefPhase::Checking;
                 }
                 // Track active query
                 self.activity.active_queries.push(ActiveQuery {
@@ -1626,16 +1877,16 @@ impl App {
                     }
                     paper.record_result(index, result.clone());
                 }
-                if let Some(refs) = self.ref_states.get_mut(paper_index) {
-                    if let Some(rs) = refs.get_mut(index) {
-                        rs.phase = RefPhase::Done;
-                        // Remove matching active query
-                        let title = rs.title.clone();
-                        self.activity
-                            .active_queries
-                            .retain(|q| q.ref_title != title);
-                        rs.result = Some(result);
-                    }
+                if let Some(refs) = self.ref_states.get_mut(paper_index)
+                    && let Some(rs) = refs.get_mut(index)
+                {
+                    rs.phase = RefPhase::Done;
+                    // Remove matching active query
+                    let title = rs.title.clone();
+                    self.activity
+                        .active_queries
+                        .retain(|q| q.ref_title != title);
+                    rs.result = Some(result);
                 }
                 self.activity.total_completed += 1;
                 self.throughput_since_last += 1;
@@ -1674,15 +1925,13 @@ impl App {
                         && !success
                         && !self.activity.dblp_timeout_warned
                         && self.config_state.dblp_offline_path.is_empty()
+                        && let Some(health) = self.activity.db_health.get("DBLP")
+                        && health.failed >= 3
                     {
-                        if let Some(health) = self.activity.db_health.get("DBLP") {
-                            if health.failed >= 3 {
-                                self.activity.log_warn(
+                        self.activity.log_warn(
                                     "DBLP online timing out repeatedly. Build an offline database: hallucinator-tui update-dblp".to_string()
                                 );
-                                self.activity.dblp_timeout_warned = true;
-                            }
-                        }
+                        self.activity.dblp_timeout_warned = true;
                     }
                 }
             }
@@ -1718,10 +1967,10 @@ impl App {
         match &self.screen {
             Screen::RefDetail(paper_idx, ref_idx) => {
                 let rs = self.ref_states.get(*paper_idx)?.get(*ref_idx)?;
-                if let Some(result) = &rs.result {
-                    if !result.raw_citation.is_empty() {
-                        return Some(result.raw_citation.clone());
-                    }
+                if let Some(result) = &rs.result
+                    && !result.raw_citation.is_empty()
+                {
+                    return Some(result.raw_citation.clone());
                 }
                 Some(rs.title.clone())
             }
@@ -1776,10 +2025,10 @@ impl App {
         };
 
         // Mark as retrying
-        if let Some(refs) = self.ref_states.get_mut(paper_idx) {
-            if let Some(rs) = refs.get_mut(ref_idx) {
-                rs.phase = RefPhase::Retrying;
-            }
+        if let Some(refs) = self.ref_states.get_mut(paper_idx)
+            && let Some(rs) = refs.get_mut(ref_idx)
+        {
+            rs.phase = RefPhase::Retrying;
         }
 
         self.activity
@@ -1822,12 +2071,11 @@ impl App {
         // Collect retryable refs: NotFound with failed_dbs, or NotFound for full re-check
         let mut to_retry: Vec<(usize, hallucinator_core::Reference, Vec<String>)> = Vec::new();
         for (i, rs) in refs.iter().enumerate() {
-            if let Some(result) = &rs.result {
-                if result.status == hallucinator_core::Status::NotFound {
-                    if let Some(reference) = paper_refs.get(i) {
-                        to_retry.push((i, reference.clone(), result.failed_dbs.clone()));
-                    }
-                }
+            if let Some(result) = &rs.result
+                && result.status == hallucinator_core::Status::NotFound
+                && let Some(reference) = paper_refs.get(i)
+            {
+                to_retry.push((i, reference.clone(), result.failed_dbs.clone()));
             }
         }
 
@@ -1940,6 +2188,9 @@ fn osc52_copy(text: &str) {
 }
 
 fn verdict_sort_key(rs: &RefState) -> u8 {
+    if matches!(rs.phase, RefPhase::Skipped(_)) {
+        return 5; // sort skipped refs last
+    }
     match &rs.result {
         Some(r) => {
             if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
@@ -1953,5 +2204,602 @@ fn verdict_sort_key(rs: &RefState) -> u8 {
             }
         }
         None => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::action::Action;
+    use crate::model::config::ConfigSection;
+
+    /// Create a minimal App for testing (no backend, no files).
+    fn test_app() -> App {
+        App::new(vec![], Theme::hacker())
+    }
+
+    /// Navigate from Banner to Queue (dismiss banner).
+    fn dismiss_banner(app: &mut App) {
+        app.screen = Screen::Queue;
+    }
+
+    // ── FilePickerContext defaults ──────────────────────────────────
+
+    #[test]
+    fn file_picker_context_defaults_to_add_files() {
+        let app = test_app();
+        assert_eq!(app.file_picker_context, FilePickerContext::AddFiles);
+    }
+
+    // ── AddFiles from Queue opens picker in AddFiles mode ──────────
+
+    #[test]
+    fn add_files_from_queue_opens_picker() {
+        let mut app = test_app();
+        dismiss_banner(&mut app);
+        app.update(Action::AddFiles);
+        assert_eq!(app.screen, Screen::FilePicker);
+        assert_eq!(app.file_picker_context, FilePickerContext::AddFiles);
+    }
+
+    // ── AddFiles from Config > Databases item 0 opens db picker ────
+
+    #[test]
+    fn add_files_from_config_databases_item0_opens_db_picker() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::Databases;
+        app.config_state.item_cursor = 0;
+
+        app.update(Action::AddFiles);
+
+        assert_eq!(app.screen, Screen::FilePicker);
+        assert_eq!(
+            app.file_picker_context,
+            FilePickerContext::SelectDatabase { config_item: 0 }
+        );
+    }
+
+    #[test]
+    fn add_files_from_config_databases_item1_opens_db_picker() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::Databases;
+        app.config_state.item_cursor = 1;
+
+        app.update(Action::AddFiles);
+
+        assert_eq!(app.screen, Screen::FilePicker);
+        assert_eq!(
+            app.file_picker_context,
+            FilePickerContext::SelectDatabase { config_item: 1 }
+        );
+    }
+
+    // ── AddFiles from Config > Databases item 2+ is a no-op ────────
+
+    #[test]
+    fn add_files_from_config_databases_toggle_item_is_noop() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::Databases;
+        app.config_state.item_cursor = 3; // a DB toggle item
+
+        app.update(Action::AddFiles);
+
+        // Should stay on Config, not open picker
+        assert_eq!(app.screen, Screen::Config);
+    }
+
+    // ── AddFiles from Config > non-Databases section is a no-op ────
+
+    #[test]
+    fn add_files_from_config_api_keys_is_noop() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::ApiKeys;
+        app.config_state.item_cursor = 0;
+
+        app.update(Action::AddFiles);
+
+        assert_eq!(app.screen, Screen::Config);
+    }
+
+    // ── Esc in db picker with no selection returns to Config unchanged ──
+
+    #[test]
+    fn esc_in_db_picker_no_selection_returns_to_config() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 0 };
+        app.file_picker.selected.clear();
+        app.config_state.dblp_offline_path = String::new();
+
+        app.update(Action::NavigateBack);
+
+        assert_eq!(app.screen, Screen::Config);
+        assert_eq!(app.file_picker_context, FilePickerContext::AddFiles);
+        assert!(app.config_state.dblp_offline_path.is_empty());
+    }
+
+    // ── Esc in db picker with selection writes canonicalized path ────
+
+    #[test]
+    fn esc_in_db_picker_with_selection_writes_path() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 1 };
+
+        // Use a path that definitely exists so canonicalize succeeds
+        let existing = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        app.file_picker.selected = vec![existing.clone()];
+
+        app.update(Action::NavigateBack);
+
+        assert_eq!(app.screen, Screen::Config);
+        assert_eq!(app.file_picker_context, FilePickerContext::AddFiles);
+        // Should be an absolute, canonicalized path
+        let result = &app.config_state.acl_offline_path;
+        assert!(!result.is_empty());
+        assert!(PathBuf::from(result).is_absolute());
+    }
+
+    // ── Esc in normal picker returns to Queue ───────────────────────
+
+    #[test]
+    fn esc_in_normal_picker_returns_to_queue() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::AddFiles;
+
+        app.update(Action::NavigateBack);
+
+        assert_eq!(app.screen, Screen::Queue);
+    }
+
+    // ── Space in db picker ignores non-db files ─────────────────────
+
+    #[test]
+    fn space_in_db_picker_ignores_non_db_entry() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 0 };
+
+        // Inject a PDF entry at cursor
+        app.file_picker.entries = vec![FileEntry {
+            name: "paper.pdf".to_string(),
+            path: PathBuf::from("/tmp/paper.pdf"),
+            is_dir: false,
+            is_pdf: true,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: false,
+        }];
+        app.file_picker.cursor = 0;
+
+        app.update(Action::ToggleSafe);
+
+        assert!(app.file_picker.selected.is_empty());
+    }
+
+    // ── Space in db picker selects db file (single-select) ──────────
+
+    #[test]
+    fn space_in_db_picker_selects_db_file() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 0 };
+
+        app.file_picker.entries = vec![FileEntry {
+            name: "dblp.db".to_string(),
+            path: PathBuf::from("/tmp/dblp.db"),
+            is_dir: false,
+            is_pdf: false,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: true,
+        }];
+        app.file_picker.cursor = 0;
+
+        app.update(Action::ToggleSafe);
+
+        assert_eq!(app.file_picker.selected.len(), 1);
+        assert_eq!(app.file_picker.selected[0], PathBuf::from("/tmp/dblp.db"));
+    }
+
+    // ── Space in db picker replaces previous selection ──────────────
+
+    #[test]
+    fn space_in_db_picker_single_select_replaces() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 0 };
+
+        app.file_picker.selected = vec![PathBuf::from("/tmp/old.db")];
+        app.file_picker.entries = vec![FileEntry {
+            name: "new.db".to_string(),
+            path: PathBuf::from("/tmp/new.db"),
+            is_dir: false,
+            is_pdf: false,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: true,
+        }];
+        app.file_picker.cursor = 0;
+
+        app.update(Action::ToggleSafe);
+
+        assert_eq!(app.file_picker.selected.len(), 1);
+        assert_eq!(app.file_picker.selected[0], PathBuf::from("/tmp/new.db"));
+    }
+
+    // ── Enter on .db file in db picker confirms and returns to Config ──
+
+    #[test]
+    fn enter_on_db_file_in_db_picker_confirms() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 0 };
+
+        // Use CARGO_MANIFEST_DIR as a known-existing path for canonicalize
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let cargo_toml = manifest.join("Cargo.toml");
+
+        // Create a fake .db entry pointing to a real file (so canonicalize works)
+        app.file_picker.entries = vec![FileEntry {
+            name: "Cargo.toml".to_string(), // reuse existing file
+            path: cargo_toml.clone(),
+            is_dir: false,
+            is_pdf: false,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: true, // pretend it's a db
+        }];
+        app.file_picker.cursor = 0;
+
+        app.update(Action::DrillIn);
+
+        assert_eq!(app.screen, Screen::Config);
+        assert_eq!(app.file_picker_context, FilePickerContext::AddFiles);
+        let result = &app.config_state.dblp_offline_path;
+        assert!(!result.is_empty());
+        assert!(PathBuf::from(result).is_absolute());
+    }
+
+    // ── Enter on directory in db picker navigates into it ───────────
+
+    #[test]
+    fn enter_on_dir_in_db_picker_navigates() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 0 };
+
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        app.file_picker.entries = vec![FileEntry {
+            name: "src".to_string(),
+            path: manifest.join("src"),
+            is_dir: true,
+            is_pdf: false,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: false,
+        }];
+        app.file_picker.cursor = 0;
+
+        app.update(Action::DrillIn);
+
+        // Should still be in file picker, navigated into the dir
+        assert_eq!(app.screen, Screen::FilePicker);
+        assert!(app.file_picker_context == FilePickerContext::SelectDatabase { config_item: 0 });
+    }
+
+    // ── Enter on non-db file in db picker is a no-op ────────────────
+
+    #[test]
+    fn enter_on_non_db_file_in_db_picker_is_noop() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 0 };
+
+        app.file_picker.entries = vec![FileEntry {
+            name: "paper.pdf".to_string(),
+            path: PathBuf::from("/tmp/paper.pdf"),
+            is_dir: false,
+            is_pdf: true,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: false,
+        }];
+        app.file_picker.cursor = 0;
+
+        app.update(Action::DrillIn);
+
+        // Should remain on file picker, nothing selected
+        assert_eq!(app.screen, Screen::FilePicker);
+        assert!(app.file_picker.selected.is_empty());
+    }
+
+    // ── Canonicalize on manual config edit ───────────────────────────
+
+    #[test]
+    fn confirm_config_edit_canonicalizes_dblp_path() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::Databases;
+        app.config_state.item_cursor = 0;
+
+        // Start editing
+        app.update(Action::DrillIn); // triggers handle_config_enter
+        assert!(app.config_state.editing);
+
+        // Clear buffer and type a known-existing path
+        app.config_state.edit_buffer = env!("CARGO_MANIFEST_DIR").to_string();
+
+        // Confirm
+        app.update(Action::SearchConfirm);
+        assert!(!app.config_state.editing);
+
+        let result = &app.config_state.dblp_offline_path;
+        assert!(!result.is_empty());
+        assert!(PathBuf::from(result).is_absolute());
+    }
+
+    #[test]
+    fn confirm_config_edit_empty_path_stays_empty() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::Databases;
+        app.config_state.item_cursor = 1;
+
+        app.update(Action::DrillIn);
+        app.config_state.edit_buffer.clear();
+        app.update(Action::SearchConfirm);
+
+        assert!(app.config_state.acl_offline_path.is_empty());
+    }
+
+    // ── is_db detection in FileEntry ────────────────────────────────
+
+    #[test]
+    fn refresh_entries_detects_db_extension() {
+        // We can't easily control the filesystem, but we can test the
+        // detection logic directly on a FileEntry constructed in refresh_entries.
+        let ext_db = std::path::Path::new("test.db")
+            .extension()
+            .and_then(|e| e.to_str());
+        assert!(
+            ext_db
+                .map(|e| e.eq_ignore_ascii_case("db") || e.eq_ignore_ascii_case("sqlite"))
+                .unwrap_or(false)
+        );
+
+        let ext_sqlite = std::path::Path::new("test.sqlite")
+            .extension()
+            .and_then(|e| e.to_str());
+        assert!(
+            ext_sqlite
+                .map(|e| e.eq_ignore_ascii_case("db") || e.eq_ignore_ascii_case("sqlite"))
+                .unwrap_or(false)
+        );
+
+        let ext_pdf = std::path::Path::new("test.pdf")
+            .extension()
+            .and_then(|e| e.to_str());
+        assert!(
+            !ext_pdf
+                .map(|e| e.eq_ignore_ascii_case("db") || e.eq_ignore_ascii_case("sqlite"))
+                .unwrap_or(false)
+        );
+    }
+
+    // ── toggle_selected allows .db files ────────────────────────────
+
+    #[test]
+    fn toggle_selected_allows_db_files() {
+        let mut picker = FilePickerState::new();
+        picker.entries = vec![FileEntry {
+            name: "test.db".to_string(),
+            path: PathBuf::from("/tmp/test.db"),
+            is_dir: false,
+            is_pdf: false,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: true,
+        }];
+        picker.cursor = 0;
+
+        picker.toggle_selected();
+        assert_eq!(picker.selected.len(), 1);
+
+        // Toggle off
+        picker.toggle_selected();
+        assert!(picker.selected.is_empty());
+    }
+
+    // ── Normal picker behavior unchanged ────────────────────────────
+
+    #[test]
+    fn normal_picker_enter_toggles_pdf() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::AddFiles;
+
+        app.file_picker.entries = vec![FileEntry {
+            name: "paper.pdf".to_string(),
+            path: PathBuf::from("/tmp/paper.pdf"),
+            is_dir: false,
+            is_pdf: true,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: false,
+        }];
+        app.file_picker.cursor = 0;
+
+        app.update(Action::DrillIn);
+
+        // In normal mode, Enter on PDF toggles selection (stays in picker)
+        assert_eq!(app.screen, Screen::FilePicker);
+        assert_eq!(app.file_picker.selected.len(), 1);
+    }
+
+    // ── Dirty flag tracking ─────────────────────────────────────────
+
+    #[test]
+    fn config_starts_not_dirty() {
+        let app = test_app();
+        assert!(!app.config_state.dirty);
+    }
+
+    #[test]
+    fn confirm_config_edit_sets_dirty() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::ApiKeys;
+        app.config_state.item_cursor = 0;
+
+        // Start editing, type something, confirm
+        app.update(Action::DrillIn);
+        app.config_state.edit_buffer = "test-key".to_string();
+        app.update(Action::SearchConfirm);
+
+        assert!(app.config_state.dirty);
+    }
+
+    #[test]
+    fn config_space_toggle_db_sets_dirty() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::Databases;
+        app.config_state.item_cursor = 2; // first DB toggle
+
+        app.update(Action::ToggleSafe);
+
+        assert!(app.config_state.dirty);
+    }
+
+    #[test]
+    fn config_theme_cycle_sets_dirty() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.section = ConfigSection::Display;
+        app.config_state.item_cursor = 0;
+
+        app.update(Action::DrillIn); // Enter cycles theme
+
+        assert!(app.config_state.dirty);
+    }
+
+    // ── Confirm exit prompt ─────────────────────────────────────────
+
+    #[test]
+    fn esc_on_dirty_config_shows_confirm_prompt() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.dirty = true;
+
+        app.update(Action::NavigateBack);
+
+        // Should stay on Config with confirm_exit active
+        assert_eq!(app.screen, Screen::Config);
+        assert!(app.config_state.confirm_exit);
+    }
+
+    #[test]
+    fn esc_on_clean_config_exits_immediately() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.dirty = false;
+
+        app.update(Action::NavigateBack);
+
+        assert_eq!(app.screen, Screen::Queue);
+        assert!(!app.config_state.confirm_exit);
+    }
+
+    #[test]
+    fn confirm_prompt_n_discards_and_exits() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.dirty = true;
+        app.config_state.confirm_exit = true;
+
+        // n = NextMatch in normal mode
+        app.update(Action::NextMatch);
+
+        assert_eq!(app.screen, Screen::Queue);
+        assert!(!app.config_state.confirm_exit);
+        assert!(!app.config_state.dirty);
+    }
+
+    #[test]
+    fn confirm_prompt_esc_cancels_back_to_config() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.dirty = true;
+        app.config_state.confirm_exit = true;
+
+        app.update(Action::NavigateBack);
+
+        // Should stay on Config, prompt dismissed
+        assert_eq!(app.screen, Screen::Config);
+        assert!(!app.config_state.confirm_exit);
+        assert!(app.config_state.dirty); // still dirty
+    }
+
+    #[test]
+    fn confirm_prompt_ignores_other_actions() {
+        let mut app = test_app();
+        app.screen = Screen::Config;
+        app.config_state.dirty = true;
+        app.config_state.confirm_exit = true;
+
+        app.update(Action::MoveDown);
+
+        // Should still be showing prompt, nothing changed
+        assert_eq!(app.screen, Screen::Config);
+        assert!(app.config_state.confirm_exit);
+    }
+
+    #[test]
+    fn db_picker_enter_on_db_sets_dirty() {
+        let mut app = test_app();
+        app.screen = Screen::FilePicker;
+        app.file_picker_context = FilePickerContext::SelectDatabase { config_item: 0 };
+
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let cargo_toml = manifest.join("Cargo.toml");
+        app.file_picker.entries = vec![FileEntry {
+            name: "Cargo.toml".to_string(),
+            path: cargo_toml,
+            is_dir: false,
+            is_pdf: false,
+            is_bbl: false,
+            is_bib: false,
+            is_archive: false,
+            is_json: false,
+            is_db: true,
+        }];
+        app.file_picker.cursor = 0;
+
+        app.update(Action::DrillIn);
+
+        assert_eq!(app.screen, Screen::Config);
+        assert!(app.config_state.dirty);
     }
 }

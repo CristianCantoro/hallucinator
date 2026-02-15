@@ -164,28 +164,28 @@ async fn check(
         let db = hallucinator_dblp::DblpDatabase::open(path)?;
 
         // Check staleness
-        if let Ok(staleness) = db.check_staleness(30) {
-            if staleness.is_stale {
-                let msg = if let Some(days) = staleness.age_days {
-                    format!(
-                        "Offline DBLP database is {} days old. Consider running: hallucinator-cli update-dblp {}",
-                        days,
-                        path.display()
-                    )
-                } else {
-                    format!(
-                        "Offline DBLP database may be stale. Consider running: hallucinator-cli update-dblp {}",
-                        path.display()
-                    )
-                };
-                if color.enabled() {
-                    use owo_colors::OwoColorize;
-                    writeln!(writer, "{}", msg.yellow())?;
-                } else {
-                    writeln!(writer, "{}", msg)?;
-                }
-                writeln!(writer)?;
+        if let Ok(staleness) = db.check_staleness(30)
+            && staleness.is_stale
+        {
+            let msg = if let Some(days) = staleness.age_days {
+                format!(
+                    "Offline DBLP database is {} days old. Consider running: hallucinator-cli update-dblp {}",
+                    days,
+                    path.display()
+                )
+            } else {
+                format!(
+                    "Offline DBLP database may be stale. Consider running: hallucinator-cli update-dblp {}",
+                    path.display()
+                )
+            };
+            if color.enabled() {
+                use owo_colors::OwoColorize;
+                writeln!(writer, "{}", msg.yellow())?;
+            } else {
+                writeln!(writer, "{}", msg)?;
             }
+            writeln!(writer)?;
         }
 
         Some(Arc::new(Mutex::new(db)))
@@ -204,28 +204,28 @@ async fn check(
         }
         let db = hallucinator_acl::AclDatabase::open(path)?;
 
-        if let Ok(staleness) = db.check_staleness(30) {
-            if staleness.is_stale {
-                let msg = if let Some(days) = staleness.age_days {
-                    format!(
-                        "Offline ACL database is {} days old. Consider running: hallucinator-cli update-acl {}",
-                        days,
-                        path.display()
-                    )
-                } else {
-                    format!(
-                        "Offline ACL database may be stale. Consider running: hallucinator-cli update-acl {}",
-                        path.display()
-                    )
-                };
-                if color.enabled() {
-                    use owo_colors::OwoColorize;
-                    writeln!(writer, "{}", msg.yellow())?;
-                } else {
-                    writeln!(writer, "{}", msg)?;
-                }
-                writeln!(writer)?;
+        if let Ok(staleness) = db.check_staleness(30)
+            && staleness.is_stale
+        {
+            let msg = if let Some(days) = staleness.age_days {
+                format!(
+                    "Offline ACL database is {} days old. Consider running: hallucinator-cli update-acl {}",
+                    days,
+                    path.display()
+                )
+            } else {
+                format!(
+                    "Offline ACL database may be stale. Consider running: hallucinator-cli update-acl {}",
+                    path.display()
+                )
+            };
+            if color.enabled() {
+                use owo_colors::OwoColorize;
+                writeln!(writer, "{}", msg.yellow())?;
+            } else {
+                writeln!(writer, "{}", msg)?;
             }
+            writeln!(writer)?;
         }
 
         Some(Arc::new(Mutex::new(db)))
@@ -452,14 +452,19 @@ fn dry_run_pdf(
 
         let word_count = cleaned_title.split_whitespace().count();
         if cleaned_title.is_empty() || word_count < 4 {
-            if use_color {
-                writeln!(
-                    writer,
-                    "  {}",
-                    format!("SKIPPED (title too short: {} words)", word_count).red()
-                )?;
-            } else {
-                writeln!(writer, "  SKIPPED (title too short: {} words)", word_count)?;
+            // Check for strong signals that override the short-title skip
+            let has_signal =
+                !cleaned_title.is_empty() && (doi.is_some() || arxiv_id.is_some() || from_quotes);
+            if !has_signal {
+                if use_color {
+                    writeln!(
+                        writer,
+                        "  {}",
+                        format!("SKIPPED (title too short: {} words)", word_count).red()
+                    )?;
+                } else {
+                    writeln!(writer, "  SKIPPED (title too short: {} words)", word_count)?;
+                }
             }
         }
 
