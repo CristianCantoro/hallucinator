@@ -62,6 +62,36 @@ fn problematic_pct(stats: &CheckStats) -> f64 {
     }
 }
 
+/// Compute stats adjusted for false-positive overrides.
+///
+/// References marked as FP are moved out of their original bucket
+/// (not_found / author_mismatch / retracted) and into `verified`,
+/// since the user has vouched for them.
+fn adjusted_stats(paper: &PaperState, refs: &[RefState]) -> CheckStats {
+    let mut s = paper.stats.clone();
+    for (ri, result) in paper.results.iter().enumerate() {
+        if let Some(r) = result
+            && refs.get(ri).and_then(|rs| rs.fp_reason).is_some()
+        {
+            match r.status {
+                Status::NotFound => {
+                    s.not_found = s.not_found.saturating_sub(1);
+                    s.verified += 1;
+                }
+                Status::AuthorMismatch => {
+                    s.author_mismatch = s.author_mismatch.saturating_sub(1);
+                    s.verified += 1;
+                }
+                Status::Verified => {}
+            }
+            if r.retraction_info.as_ref().is_some_and(|ri| ri.is_retracted) {
+                s.retracted = s.retracted.saturating_sub(1);
+            }
+        }
+    }
+    s
+}
+
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -99,7 +129,8 @@ fn json_str_array(v: &[String]) -> String {
 pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
     let mut out = String::from("[\n");
     for (pi, paper) in papers.iter().enumerate() {
-        let s = &paper.stats;
+        let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
+        let s = adjusted_stats(paper, paper_refs);
         let verdict_json = match paper.verdict {
             Some(_) => json_str(verdict_str(paper.verdict)),
             None => "null".to_string(),
@@ -109,9 +140,8 @@ pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
             json_str(&paper.filename),
             verdict_json,
             s.total, s.verified, s.not_found, s.author_mismatch, s.retracted, s.skipped,
-            problematic_pct(s),
+            problematic_pct(&s),
         ));
-        let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
 
         // Collect all entries to write: normal results + skipped refs
         let mut entries: Vec<String> = Vec::new();
@@ -354,7 +384,7 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
 
     for (pi, paper) in papers.iter().enumerate() {
         let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
-        let s = &paper.stats;
+        let s = adjusted_stats(paper, paper_refs);
         let verdict_badge = match paper.verdict {
             Some(PaperVerdict::Safe) => " **[SAFE]**",
             Some(PaperVerdict::Questionable) => " **[?!]**",
@@ -366,7 +396,7 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
         out.push_str(&format!(
             "**{}** references | **{}** verified | **{}** not found | **{}** mismatch | **{}** retracted | **{}** skipped | **{:.1}%** problematic\n\n",
             s.total, s.verified, s.not_found, s.author_mismatch, s.retracted, s.skipped,
-            problematic_pct(s),
+            problematic_pct(&s),
         ));
 
         // Group: problems first, then verified
@@ -559,7 +589,7 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
 
     for (pi, paper) in papers.iter().enumerate() {
         let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
-        let s = &paper.stats;
+        let s = adjusted_stats(paper, paper_refs);
         let verdict_badge = match paper.verdict {
             Some(PaperVerdict::Safe) => " [SAFE]",
             Some(PaperVerdict::Questionable) => " [?!]",
@@ -572,7 +602,7 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
         out.push_str(&format!(
             "  {} total | {} verified | {} not found | {} mismatch | {} retracted | {} skipped | {:.1}% problematic\n\n",
             s.total, s.verified, s.not_found, s.author_mismatch, s.retracted, s.skipped,
-            problematic_pct(s),
+            problematic_pct(&s),
         ));
 
         for (ri, result) in paper.results.iter().enumerate() {
@@ -687,15 +717,17 @@ fn html_escape(s: &str) -> String {
 fn export_html(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
     let mut out = String::with_capacity(16384);
 
-    // Aggregate stats across all papers
+    // Aggregate adjusted stats across all papers
     let mut total_stats = CheckStats::default();
-    for p in papers {
-        total_stats.total += p.stats.total;
-        total_stats.verified += p.stats.verified;
-        total_stats.not_found += p.stats.not_found;
-        total_stats.author_mismatch += p.stats.author_mismatch;
-        total_stats.retracted += p.stats.retracted;
-        total_stats.skipped += p.stats.skipped;
+    for (pi, p) in papers.iter().enumerate() {
+        let pr = ref_states.get(pi).copied().unwrap_or(&[]);
+        let adj = adjusted_stats(p, pr);
+        total_stats.total += adj.total;
+        total_stats.verified += adj.verified;
+        total_stats.not_found += adj.not_found;
+        total_stats.author_mismatch += adj.author_mismatch;
+        total_stats.retracted += adj.retracted;
+        total_stats.skipped += adj.skipped;
     }
 
     out.push_str(
@@ -886,8 +918,8 @@ footer {
     // Per-paper sections
     for (pi, paper) in papers.iter().enumerate() {
         let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
-        let s = &paper.stats;
-        let pp = problematic_pct(s);
+        let s = adjusted_stats(paper, paper_refs);
+        let pp = problematic_pct(&s);
         let verdict_html = match paper.verdict {
             Some(PaperVerdict::Safe) => " <span class=\"badge verified\">SAFE</span>",
             Some(PaperVerdict::Questionable) => " <span class=\"badge not-found\">?!</span>",
