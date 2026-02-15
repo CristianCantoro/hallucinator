@@ -6,13 +6,16 @@ This file documents patterns and fixes discovered from analyzing 51 NeurIPS pape
 (2,582 references). These patterns should be ported to the Rust engine in:
   - hallucinator-core/src/matching.rs (title normalization/validation)
   - hallucinator-pdf/src/title.rs (title extraction validation)
+  - hallucinator-pdf/src/references.rs (segmentation)
 
-Issues found (17 problematic refs, 0.7%):
+Issues found (17+ problematic refs, 0.7%):
   1. Title ending with ?/! followed by venue name (3 cases)
   2. Venue/journal name extracted as title (1 case)
   3. Author initials list as title - "AL, Name Name," format (1 case)
   4. Very long titles with author lists (4 cases)
   5. Non-reference content (checklists, acknowledgments) (8 cases)
+  6. NeurIPS/ML author list as title - "I. Surname, I. Surname, and I." format
+  7. NeurIPS/ML unnumbered reference segmentation (missing pattern)
 
 Run this file to test all patterns:
     python neurips_fps_regexps.py
@@ -409,6 +412,196 @@ fn is_title_too_long(title: &str) -> bool {
 
 
 # =============================================================================
+# FIX 6: NeurIPS/ML Author List Detection
+# =============================================================================
+# NeurIPS/ML papers use "I. Surname" format for authors (not "SURNAME, I.").
+# When the title extraction fails, it may grab author names like:
+#   "B. Hassibi, D. G. Stork, and G. J. Wolff"
+#
+# This pattern differs from FIX 3 (short initials) as it has:
+# - Single initial followed by period (B.)
+# - Optional middle initial (D. G.)
+# - Mixed-case surname (Hassibi)
+# - Connected by commas and "and"
+#
+# Location: hallucinator-pdf/src/title.rs (add to author_list detection)
+
+# Pattern: I. Surname, I. G. Surname, and I. Surname
+NEURIPS_AUTHOR_LIST_PATTERN = re.compile(
+    r'^[A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-z]+,\s+[A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-z]+,\s+and\s+[A-Z]\.',
+    re.IGNORECASE
+)
+
+
+def is_neurips_author_list(text: str) -> bool:
+    """Check if text looks like 'I. Surname, I. Surname, and I. Surname' author list."""
+    return bool(NEURIPS_AUTHOR_LIST_PATTERN.match(text))
+
+
+def test_neurips_author_list():
+    """Test NeurIPS/ML author list detection."""
+    print("=" * 60)
+    print("FIX 6: NeurIPS/ML Author List Detection")
+    print("=" * 60)
+
+    # Should be detected as author list (rejected)
+    author_lists = [
+        "B. Hassibi, D. G. Stork, and G. J. Wolff",
+        "A. Smith, B. Jones, and C. Williams",
+        "J. Doe, M. K. Lee, and P. Brown",
+        "X. Zhang, Y. Wang, and Z. Li",
+    ]
+
+    # Should NOT be detected (valid titles)
+    valid_titles = [
+        "A. New Approach to Machine Learning",  # A. starts a title/section
+        "B. Results and Discussion",  # Section header
+        "Deep Learning for NLP",
+        "Attention Is All You Need",
+    ]
+
+    print("  Should be detected as NeurIPS author list:")
+    for text in author_lists:
+        result = is_neurips_author_list(text)
+        status = "OK" if result else "FAIL"
+        print(f"    {status}: '{text[:50]}...'")
+
+    print("  Should NOT be detected as NeurIPS author list:")
+    for text in valid_titles:
+        result = is_neurips_author_list(text)
+        status = "OK" if not result else "FAIL"
+        print(f"    {status}: '{text[:50]}...'")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_NEURIPS_AUTHOR_LIST = '''
+// Add to AUTHOR_LIST_PATTERNS in title.rs:
+
+// NeurIPS/ML style: "I. Surname, I. G. Surname, and I. Surname" (mixed case surnames)
+// e.g., "B. Hassibi, D. G. Stork, and G. J. Wolff"
+Regex::new(r"(?i)^[A-Z]\\.(?:\\s*[A-Z]\\.)?\s+[A-Z][a-z]+,\\s+[A-Z]\\.(?:\\s*[A-Z]\\.)?\s+[A-Z][a-z]+,\\s+and\\s+[A-Z]\\.").unwrap(),
+'''
+
+
+# =============================================================================
+# FIX 7: NeurIPS/ML Reference Segmentation
+# =============================================================================
+# NeurIPS/ML papers use unnumbered references in format:
+#   "I. Surname and I. Surname. Title. Venue, Year."
+#
+# The current segmentation patterns (IEEE [1], numbered 1., AAAI Surname, I.)
+# don't match this format, causing all references to merge together.
+#
+# Pattern: Reference ends with period, newline(s), then new reference starts
+# with author initials (I. Surname) followed by "and" or comma+initial.
+#
+# Location: hallucinator-pdf/src/references.rs (add to segment_references)
+
+# Pattern to find reference boundaries
+NEURIPS_SEGMENTATION_PATTERN = re.compile(
+    r'(\.\s*)\n+([A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-zA-Z\u00C0-\u024F-]+(?:\s+and\s+[A-Z]\.|,\s+[A-Z]\.))'
+)
+
+
+def segment_neurips_references(ref_text: str) -> List[str]:
+    """Segment NeurIPS/ML style references.
+
+    These use format: "I. Surname and I. Surname. Title. Venue, Year."
+    """
+    matches = list(NEURIPS_SEGMENTATION_PATTERN.finditer(ref_text))
+
+    if len(matches) < 5:
+        return []  # Not enough matches, let other patterns try
+
+    refs = []
+    # First reference: from start to first match
+    first_end = matches[0].start() + len(matches[0].group(1))
+    first_ref = ref_text[:first_end].strip()
+    if first_ref and len(first_ref) > 20:
+        refs.append(first_ref)
+
+    # Remaining references
+    for i, match in enumerate(matches):
+        start = match.start(2)  # Start at the author initials
+        if i + 1 < len(matches):
+            end = matches[i + 1].start() + len(matches[i + 1].group(1))
+        else:
+            end = len(ref_text)
+        ref_content = ref_text[start:end].strip()
+        if ref_content and len(ref_content) > 20:
+            refs.append(ref_content)
+
+    return refs
+
+
+def test_neurips_segmentation():
+    """Test NeurIPS/ML reference segmentation."""
+    print("=" * 60)
+    print("FIX 7: NeurIPS/ML Reference Segmentation")
+    print("=" * 60)
+
+    # Sample NeurIPS reference section - note: refs must end with period, then newline
+    # The pattern looks for ".\n" followed by author initials
+    sample_refs = """C. D. Aliprantis and K. C. Border. Infinite dimensional analysis: A hitchhiker's guide. Springer, 2006.
+E. Boursier and N. Flammarion. Penalising the biases in norm regularisation enforces sparsity. In NeurIPS, 2023.
+P. Bühlmann and S. Van De Geer. Statistics for high-dimensional data: Methods, theory and applications. Springer, 2011.
+B. Hassibi, D. G. Stork, and G. J. Wolff. Optimal brain surgeon and general network pruning. In IEEE ICNN, 1993.
+Y. LeCun, J. S. Denker, and S. A. Solla. Optimal brain damage. In NeurIPS, 1989.
+A. Krizhevsky, I. Sutskever, and G. E. Hinton. Imagenet classification with deep convolutional neural networks. In NeurIPS, 2012.
+D. P. Kingma and J. Ba. Adam: A method for stochastic optimization. In ICLR, 2015."""
+
+    refs = segment_neurips_references(sample_refs)
+
+    print(f"  Found {len(refs)} references:")
+    for i, ref in enumerate(refs, 1):
+        # Show first 60 chars of each ref
+        print(f"    {i}. {ref[:60]}...")
+
+    # Should find at least 5 references (pattern requires >=5 matches)
+    expected_min = 5
+    status = "OK" if len(refs) >= expected_min else "FAIL"
+    print(f"\n  {status}: Expected >= {expected_min} refs, got {len(refs)}")
+
+    print()
+
+
+# Rust implementation pattern:
+RUST_NEURIPS_SEGMENTATION = '''
+// In references.rs, add to segment_references() before fallback:
+
+// NeurIPS/ML style: "I. Surname and I. Surname. Title. Venue, Year."
+// Pattern: previous ref ends with period, newline(s), then "I. Surname" starts
+static NEURIPS_SEG_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(\\.\\s*)\\n+([A-Z]\\.(?:\\s*[A-Z]\\.)?\s+[A-Z][a-zA-Z\\u00C0-\\u024F-]+(?:\\s+and\\s+[A-Z]\\.|,\\s+[A-Z]\\.))"
+    ).unwrap()
+});
+
+fn segment_neurips_style(text: &str) -> Option<Vec<String>> {
+    let matches: Vec<_> = NEURIPS_SEG_RE.find_iter(text).collect();
+    if matches.len() < 5 {
+        return None;
+    }
+
+    let mut refs = Vec::new();
+    // First reference: from start to first match
+    let first_end = matches[0].start() + /* length of group(1) */;
+    let first_ref = text[..first_end].trim();
+    if first_ref.len() > 20 {
+        refs.push(first_ref.to_string());
+    }
+
+    // Remaining references using capture groups
+    // ... similar logic to Python implementation
+
+    Some(refs)
+}
+'''
+
+
+# =============================================================================
 # COMBINED VALIDATION
 # =============================================================================
 
@@ -425,9 +618,13 @@ def validate_extracted_title(title: str) -> Tuple[str, bool, Optional[str]]:
     if is_venue_only(title):
         return title, False, "venue_only"
 
-    # Check for author initials list
+    # Check for author initials list (FIX 3: OpenAI style)
     if is_author_initials_list(title):
         return title, False, "author_initials_list"
+
+    # Check for NeurIPS/ML author list (FIX 6: I. Surname style)
+    if is_neurips_author_list(title):
+        return title, False, "neurips_author_list"
 
     # Check for non-reference content
     if is_non_reference_content(title):
@@ -450,6 +647,7 @@ def test_combined_validation():
         ("Can transformers sort? International Conference on AI", True, "truncate venue"),
         ("SIAM Journal on Scientific Computing", False, "venue_only"),
         ("AL, Andrew Ahn, Nic Becker,", False, "author_initials_list"),
+        ("B. Hassibi, D. G. Stork, and G. J. Wolff", False, "neurips_author_list"),
         ("• The answer NA means...", False, "non_reference_content"),
         ("A" * 400, False, "too_long"),
         ("Attention Is All You Need", True, "valid title"),
@@ -477,6 +675,8 @@ if __name__ == "__main__":
     test_author_initials_list()
     test_non_reference_content()
     test_title_length()
+    test_neurips_author_list()
+    test_neurips_segmentation()
     test_combined_validation()
 
     print("=" * 60)

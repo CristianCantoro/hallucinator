@@ -283,6 +283,10 @@ AUTHOR_LIST_PATTERNS = [
     # Short initials followed by name list: "AL, Andrew Ahn, Nic Becker, Stephanie" (OpenAI-style)
     # Requires at least two full names after initials to avoid false positives like "AI, Machine Learning,"
     re.compile(r'^[A-Z]{1,3},\s+[A-Z][a-z]+\s+[A-Z][a-z]+,\s+[A-Z][a-z]+\s+[A-Z][a-z]+'),
+    # NeurIPS/ML style: "I. Surname, I. G. Surname, and I. Surname" (mixed case surnames)
+    # Requires at least two "I. Surname" patterns with "and" to confirm it's an author list
+    # e.g., "B. Hassibi, D. G. Stork, and G. J. Wolff"
+    re.compile(r'^[A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-z]+,\s+[A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-z]+,\s+and\s+[A-Z]\.', re.IGNORECASE),
 ]
 
 
@@ -1353,6 +1357,34 @@ def segment_references(ref_text):
             ref_content = ref_text[start:end].strip()
             # Remove trailing page numbers
             ref_content = re.sub(r'\n+\d+\s*$', '', ref_content).strip()
+            if ref_content and len(ref_content) > 20:
+                refs.append(ref_content)
+        return refs
+
+    # Try NeurIPS/ML style: "I. Surname and I. Surname. Title. Venue, Year."
+    # References use author-initial format (I. Surname or I. I. Surname)
+    # Each reference ends with period, then new reference starts with initials
+    # Pattern: previous ref ends with period (after year or page), newline(s), then "I. Surname"
+    # Must include "and" or "," after first author to confirm it's multi-author
+    # e.g., "...2020.\nC. D. Aliprantis and K. C. Border. Infinite..."
+    neurips_pattern = r'(\.\s*)\n+([A-Z]\.(?:\s*[A-Z]\.)?\s+[A-Z][a-zA-Z\u00C0-\u024F-]+(?:\s+and\s+[A-Z]\.|,\s+[A-Z]\.))'
+    neurips_matches = list(re.finditer(neurips_pattern, ref_text))
+
+    if len(neurips_matches) >= 5:
+        refs = []
+        # First reference: from start to first match
+        first_end = neurips_matches[0].start() + len(neurips_matches[0].group(1))
+        first_ref = ref_text[:first_end].strip()
+        if first_ref and len(first_ref) > 20:
+            refs.append(first_ref)
+        # Remaining references
+        for i, match in enumerate(neurips_matches):
+            start = match.start(2)  # Start at the author initials
+            if i + 1 < len(neurips_matches):
+                end = neurips_matches[i + 1].start() + len(neurips_matches[i + 1].group(1))
+            else:
+                end = len(ref_text)
+            ref_content = ref_text[start:end].strip()
             if ref_content and len(ref_content) > 20:
                 refs.append(ref_content)
         return refs
