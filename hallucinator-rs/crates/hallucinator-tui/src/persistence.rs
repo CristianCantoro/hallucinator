@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use crate::model::paper::RefState;
+use crate::model::paper::{RefPhase, RefState};
 use crate::model::queue::PaperState;
 
 /// Get the run directory for persisting results.
@@ -28,8 +28,28 @@ pub fn save_paper_results(
     ref_states: &[RefState],
 ) {
     let out_path = run_dir.join(format!("paper_{}.json", paper_index));
-    let rs_slice: &[RefState] = ref_states;
-    let json = crate::export::export_json(&[paper], &[rs_slice]);
+    let report_paper = hallucinator_reporting::ReportPaper {
+        filename: &paper.filename,
+        stats: &paper.stats,
+        results: &paper.results,
+        verdict: paper.verdict,
+    };
+    let report_refs: Vec<hallucinator_reporting::ReportRef> = ref_states
+        .iter()
+        .map(|rs| hallucinator_reporting::ReportRef {
+            index: rs.index,
+            title: rs.title.clone(),
+            skip_info: if let RefPhase::Skipped(reason) = &rs.phase {
+                Some(hallucinator_reporting::SkipInfo {
+                    reason: reason.clone(),
+                })
+            } else {
+                None
+            },
+            fp_reason: rs.fp_reason,
+        })
+        .collect();
+    let json = hallucinator_reporting::export_json(&[report_paper], &[&report_refs]);
 
     if let Ok(mut file) = std::fs::File::create(&out_path) {
         let _ = file.write_all(json.as_bytes());
