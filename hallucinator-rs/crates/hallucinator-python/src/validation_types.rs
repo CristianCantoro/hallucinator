@@ -330,6 +330,8 @@ impl PyRetractionInfo {
 /// - ``"warning"`` — ``index``, ``total``, ``title``, ``failed_dbs``, ``message``
 /// - ``"retry_pass"`` — ``count``
 /// - ``"db_query_complete"`` — ``paper_index``, ``ref_index``, ``db_name``, ``status``, ``elapsed_ms``
+/// - ``"rate_limit_wait"`` — ``db_name``, waiting for rate limiter
+/// - ``"rate_limit_retry"`` — ``ref_index``, ``db_name``, ``attempt``, retrying after 429
 #[pyclass(name = "ProgressEvent")]
 #[derive(Debug, Clone)]
 pub struct PyProgressEvent {
@@ -353,6 +355,8 @@ impl PyProgressEvent {
             ProgressEvent::Warning { .. } => "warning",
             ProgressEvent::RetryPass { .. } => "retry_pass",
             ProgressEvent::DatabaseQueryComplete { .. } => "db_query_complete",
+            ProgressEvent::RateLimitWait { .. } => "rate_limit_wait",
+            ProgressEvent::RateLimitRetry { .. } => "rate_limit_retry",
         }
     }
 
@@ -513,6 +517,26 @@ impl PyProgressEvent {
                 "ProgressEvent(type='db_query_complete', db={:?}, status={:?})",
                 db_name,
                 db_status_str(status),
+            ),
+            ProgressEvent::RateLimitWait {
+                db_name,
+                wait_duration,
+            } => format!(
+                "ProgressEvent(type='rate_limit_wait', db={:?}, wait_ms={:.0})",
+                db_name,
+                wait_duration.as_secs_f64() * 1000.0,
+            ),
+            ProgressEvent::RateLimitRetry {
+                ref_index,
+                db_name,
+                attempt,
+                backoff,
+            } => format!(
+                "ProgressEvent(type='rate_limit_retry', ref={}, db={:?}, attempt={}, backoff_ms={:.0})",
+                ref_index,
+                db_name,
+                attempt,
+                backoff.as_secs_f64() * 1000.0,
             ),
         }
     }

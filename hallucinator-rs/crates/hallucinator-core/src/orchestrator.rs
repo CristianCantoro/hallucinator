@@ -1,5 +1,6 @@
 use crate::authors::validate_authors;
 use crate::db::DatabaseBackend;
+use crate::rate_limit;
 use crate::{Config, DbResult, DbStatus, Status};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -58,16 +59,28 @@ pub async fn query_all_databases(
     // Use tokio::select! pattern with JoinSet for early exit
     let mut join_set = tokio::task::JoinSet::new();
 
+    let rate_limiters = config.rate_limiters.clone();
+    let max_retries = config.max_rate_limit_retries;
+
     for db in &databases {
         let db = Arc::clone(db);
         let title = title.to_string();
         let client = client.clone();
         let ref_authors = ref_authors.to_vec();
+        let rate_limiters = rate_limiters.clone();
 
         join_set.spawn(async move {
             let name = db.name().to_string();
             let start = Instant::now();
-            let result = db.query(&title, &client, timeout).await;
+            let result = rate_limit::query_with_retry(
+                db.as_ref(),
+                &title,
+                &client,
+                timeout,
+                &rate_limiters,
+                max_retries,
+            )
+            .await;
             let elapsed = start.elapsed();
             (name, result, ref_authors, elapsed)
         });
@@ -169,7 +182,7 @@ pub async fn query_all_databases(
                 }
                 db_results.push(db_result);
             }
-            Err(_e) => {
+            Err(err) => {
                 let db_result = DbResult {
                     db_name: name.clone(),
                     status: DbStatus::Error,
@@ -181,6 +194,7 @@ pub async fn query_all_databases(
                     cb(db_result.clone());
                 }
                 db_results.push(db_result);
+                log::debug!("{}: {}", name, err);
                 failed_dbs.push(name);
             }
         }

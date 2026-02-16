@@ -437,7 +437,6 @@ async fn main() -> anyhow::Result<()> {
                 tui_event::BackendCommand::ProcessFiles {
                     files,
                     starting_index,
-                    max_concurrent_papers,
                     mut config,
                 } => {
                     // Fresh token for this batch
@@ -479,7 +478,6 @@ async fn main() -> anyhow::Result<()> {
                             tx,
                             cancel,
                             starting_index,
-                            max_concurrent_papers,
                         )
                         .await;
                     });

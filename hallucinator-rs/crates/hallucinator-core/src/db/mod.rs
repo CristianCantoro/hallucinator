@@ -14,6 +14,8 @@ pub mod ssrn;
 use std::future::Future;
 use std::pin::Pin;
 
+pub use crate::rate_limit::DbQueryError;
+
 /// Result of a database query: (found_title, authors, paper_url).
 /// `None` title means not found.
 pub type DbQueryResult = (Option<String>, Vec<String>, Option<String>);
@@ -29,5 +31,5 @@ pub trait DatabaseBackend: Send + Sync {
         title: &'a str,
         client: &'a reqwest::Client,
         timeout: std::time::Duration,
-    ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, String>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<DbQueryResult, DbQueryError>> + Send + 'a>>;
 }

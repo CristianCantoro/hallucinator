@@ -526,7 +526,6 @@ impl App {
             let _ = tx.send(BackendCommand::ProcessFiles {
                 files: real_files,
                 starting_index: 0,
-                max_concurrent_papers: self.config_state.max_concurrent_papers,
                 config: Box::new(config),
             });
         }
@@ -569,7 +568,12 @@ impl App {
                 ))
             },
             acl_offline_db: None, // Populated from main.rs
-            max_concurrent_refs: self.config_state.max_concurrent_refs,
+            num_workers: self.config_state.num_workers,
+            max_rate_limit_retries: self.config_state.max_rate_limit_retries,
+            rate_limiters: std::sync::Arc::new(hallucinator_core::RateLimiters::new(
+                !self.config_state.crossref_mailto.is_empty(),
+                !self.config_state.s2_api_key.is_empty(),
+            )),
             db_timeout_secs: self.config_state.db_timeout_secs,
             db_timeout_short_secs: self.config_state.db_timeout_short_secs,
             disabled_dbs,
@@ -765,7 +769,6 @@ impl App {
             let _ = tx.send(BackendCommand::ProcessFiles {
                 files: new_pdfs,
                 starting_index,
-                max_concurrent_papers: self.config_state.max_concurrent_papers,
                 config: Box::new(config),
             });
         }
@@ -1677,8 +1680,8 @@ impl App {
             }
             ConfigSection::Concurrency => {
                 let value = match self.config_state.item_cursor {
-                    0 => self.config_state.max_concurrent_papers.to_string(),
-                    1 => self.config_state.max_concurrent_refs.to_string(),
+                    0 => self.config_state.num_workers.to_string(),
+                    1 => self.config_state.max_rate_limit_retries.to_string(),
                     2 => self.config_state.db_timeout_secs.to_string(),
                     3 => self.config_state.db_timeout_short_secs.to_string(),
                     4 => self.config_state.max_archive_size_mb.to_string(),
@@ -1757,12 +1760,12 @@ impl App {
             ConfigSection::Concurrency => match self.config_state.item_cursor {
                 0 => {
                     if let Ok(v) = buf.parse::<usize>() {
-                        self.config_state.max_concurrent_papers = v.max(1);
+                        self.config_state.num_workers = v.max(1);
                     }
                 }
                 1 => {
-                    if let Ok(v) = buf.parse::<usize>() {
-                        self.config_state.max_concurrent_refs = v.max(1);
+                    if let Ok(v) = buf.parse::<u32>() {
+                        self.config_state.max_rate_limit_retries = v;
                     }
                 }
                 2 => {
@@ -2112,6 +2115,10 @@ impl App {
                         self.activity.dblp_timeout_warned = true;
                     }
                 }
+            }
+            ProgressEvent::RateLimitWait { .. } | ProgressEvent::RateLimitRetry { .. } => {
+                // Rate limit events are handled internally by the pool;
+                // no TUI action needed (activity panel could log these in the future).
             }
         }
     }

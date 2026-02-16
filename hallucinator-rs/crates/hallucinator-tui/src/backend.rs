@@ -64,7 +64,7 @@ fn remap_progress_index(event: ProgressEvent, index_map: &[usize]) -> ProgressEv
 
 /// Run batch validation with paper indices starting at `offset`.
 ///
-/// Spawns `max_concurrent_papers` worker tasks that pull from a shared work
+/// Spawns `config.num_workers` worker tasks that pull from a shared work
 /// queue. Each worker processes one paper at a time, then grabs the next.
 pub async fn run_batch_with_offset(
     pdfs: Vec<PathBuf>,
@@ -72,10 +72,9 @@ pub async fn run_batch_with_offset(
     tx: mpsc::UnboundedSender<BackendEvent>,
     cancel: CancellationToken,
     offset: usize,
-    max_concurrent_papers: usize,
 ) {
+    let num_workers = config.num_workers.max(1);
     let config = Arc::new(config);
-    let num_workers = max_concurrent_papers.max(1);
 
     // Work queue: each item is (paper_index, path)
     let (work_tx, work_rx) = mpsc::channel::<(usize, PathBuf)>(pdfs.len().max(1));
@@ -239,7 +238,7 @@ pub async fn retry_references(
 ) {
     let client = reqwest::Client::new();
     let config = Arc::new(config);
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_refs));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(config.num_workers.max(1)));
     let total = refs_to_retry.len();
 
     let mut handles = Vec::new();
