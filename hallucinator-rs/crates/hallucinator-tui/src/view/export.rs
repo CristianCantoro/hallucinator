@@ -6,47 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
 
-/// Export format options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportFormat {
-    Json,
-    Csv,
-    Markdown,
-    Text,
-    Html,
-}
-
-impl ExportFormat {
-    pub fn all() -> &'static [ExportFormat] {
-        &[
-            ExportFormat::Json,
-            ExportFormat::Csv,
-            ExportFormat::Markdown,
-            ExportFormat::Text,
-            ExportFormat::Html,
-        ]
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Json => "JSON",
-            Self::Csv => "CSV",
-            Self::Markdown => "Markdown",
-            Self::Text => "Plain Text",
-            Self::Html => "HTML",
-        }
-    }
-
-    pub fn extension(self) -> &'static str {
-        match self {
-            Self::Json => "json",
-            Self::Csv => "csv",
-            Self::Markdown => "md",
-            Self::Text => "txt",
-            Self::Html => "html",
-        }
-    }
-}
+pub use hallucinator_reporting::ExportFormat;
 
 /// Scope of export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

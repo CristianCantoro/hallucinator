@@ -3,17 +3,15 @@ use std::path::Path;
 
 use hallucinator_core::{CheckStats, DbStatus, Status, ValidationResult};
 
-use crate::model::paper::{FpReason, RefPhase, RefState};
-use crate::model::queue::{PaperState, PaperVerdict};
-use crate::view::export::ExportFormat;
+use crate::types::{ExportFormat, FpReason, PaperVerdict, ReportPaper, ReportRef};
 
 /// Export results for a set of papers to the given path.
 ///
-/// `ref_states` is a parallel slice to `papers` — `ref_states[i]` are the RefStates
+/// `ref_states` is a parallel slice to `papers` — `ref_states[i]` are the ReportRefs
 /// for `papers[i]`. This is used to include FP reason overrides in the output.
 pub fn export_results(
-    papers: &[&PaperState],
-    ref_states: &[&[RefState]],
+    papers: &[ReportPaper<'_>],
+    ref_states: &[&[ReportRef]],
     format: ExportFormat,
     path: &Path,
 ) -> Result<(), String> {
@@ -96,7 +94,7 @@ struct SortedRef<'a> {
 /// Build a sorted list of refs for export: retracted → not found → mismatch →
 /// DOI/arXiv issues → FP-overridden → clean verified, with original ref number
 /// as tiebreaker within each bucket.
-fn build_sorted_refs<'a>(paper: &'a PaperState, paper_refs: &[RefState]) -> Vec<SortedRef<'a>> {
+fn build_sorted_refs<'a>(paper: &ReportPaper<'a>, paper_refs: &[ReportRef]) -> Vec<SortedRef<'a>> {
     let mut entries: Vec<SortedRef<'a>> = Vec::new();
     for (ri, result) in paper.results.iter().enumerate() {
         if let Some(r) = result {
@@ -129,7 +127,7 @@ fn problematic_pct(stats: &CheckStats) -> f64 {
 /// References marked as FP are moved out of their original bucket
 /// (not_found / author_mismatch / retracted) and into `verified`,
 /// since the user has vouched for them.
-fn adjusted_stats(paper: &PaperState, refs: &[RefState]) -> CheckStats {
+fn adjusted_stats(paper: &ReportPaper<'_>, refs: &[ReportRef]) -> CheckStats {
     let mut s = paper.stats.clone();
     for (ri, result) in paper.results.iter().enumerate() {
         if let Some(r) = result
@@ -188,7 +186,7 @@ fn json_str_array(v: &[String]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
+pub fn export_json(papers: &[ReportPaper<'_>], ref_states: &[&[ReportRef]]) -> String {
     let mut out = String::from("[\n");
     for (pi, paper) in papers.iter().enumerate() {
         let paper_refs = ref_states.get(pi).copied().unwrap_or(&[]);
@@ -199,7 +197,7 @@ pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
         };
         out.push_str(&format!(
             "  {{\n    \"filename\": {},\n    \"verdict\": {},\n    \"stats\": {{\n      \"total\": {},\n      \"verified\": {},\n      \"not_found\": {},\n      \"author_mismatch\": {},\n      \"retracted\": {},\n      \"skipped\": {},\n      \"problematic_pct\": {:.1}\n    }},\n    \"references\": [\n",
-            json_str(&paper.filename),
+            json_str(paper.filename),
             verdict_json,
             s.total, s.verified, s.not_found, s.author_mismatch, s.retracted, s.skipped,
             problematic_pct(&s),
@@ -329,7 +327,7 @@ pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
 
         // Add skipped refs from ref_states
         for rs in paper_refs {
-            if let RefPhase::Skipped(reason) = &rs.phase {
+            if let Some(skip) = &rs.skip_info {
                 let mut entry = String::new();
                 entry.push_str("      {\n");
                 entry.push_str(&format!("        \"index\": {},\n", rs.index));
@@ -338,7 +336,10 @@ pub fn export_json(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
                 entry.push_str("        \"raw_citation\": \"\",\n");
                 entry.push_str("        \"status\": \"skipped\",\n");
                 entry.push_str("        \"effective_status\": \"skipped\",\n");
-                entry.push_str(&format!("        \"skip_reason\": {},\n", json_str(reason)));
+                entry.push_str(&format!(
+                    "        \"skip_reason\": {},\n",
+                    json_str(&skip.reason)
+                ));
                 entry.push_str("        \"fp_reason\": null,\n");
                 entry.push_str("        \"source\": null,\n");
                 entry.push_str("        \"ref_authors\": [],\n");
@@ -379,7 +380,7 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
-fn export_csv(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
+fn export_csv(papers: &[ReportPaper<'_>], ref_states: &[&[ReportRef]]) -> String {
     let mut out = String::from(
         "Filename,Verdict,Ref#,Title,Status,EffectiveStatus,FpReason,Source,Retracted,Authors,FoundAuthors,PaperURL,DOI,ArxivID,FailedDBs\n",
     );
@@ -408,7 +409,7 @@ fn export_csv(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
             let failed = r.failed_dbs.join("; ");
             out.push_str(&format!(
                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-                csv_escape(&paper.filename),
+                csv_escape(paper.filename),
                 csv_escape(verdict),
                 sref.ref_num,
                 csv_escape(&r.title),
@@ -427,14 +428,14 @@ fn export_csv(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
         }
         // Add skipped refs
         for rs in paper_refs {
-            if let RefPhase::Skipped(reason) = &rs.phase {
+            if let Some(skip) = &rs.skip_info {
                 out.push_str(&format!(
                     "{},{},{},{},skipped,skipped,{},,,,,,,,\n",
-                    csv_escape(&paper.filename),
+                    csv_escape(paper.filename),
                     csv_escape(verdict),
                     rs.index + 1,
                     csv_escape(&rs.title),
-                    csv_escape(reason),
+                    csv_escape(&skip.reason),
                 ));
             }
         }
@@ -453,7 +454,7 @@ fn scholar_url(title: &str) -> String {
     )
 }
 
-fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
+fn export_markdown(papers: &[ReportPaper<'_>], ref_states: &[&[ReportRef]]) -> String {
     let mut out = String::from("# Hallucinator Results\n\n");
 
     for (pi, paper) in papers.iter().enumerate() {
@@ -549,23 +550,21 @@ fn export_markdown(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String
         }
 
         // Skipped references
-        let skipped: Vec<&RefState> = paper_refs
+        let skipped: Vec<&ReportRef> = paper_refs
             .iter()
-            .filter(|rs| matches!(rs.phase, RefPhase::Skipped(_)))
+            .filter(|rs| rs.skip_info.is_some())
             .collect();
         if !skipped.is_empty() {
             out.push_str("### Skipped References\n\n");
             out.push_str("| # | Title | Reason |\n");
             out.push_str("|---|-------|--------|\n");
             for rs in &skipped {
-                let reason = match &rs.phase {
-                    RefPhase::Skipped(r) => match r.as_str() {
-                        "url_only" => "URL-only",
-                        "short_title" => "Short title",
-                        "no_title" => "No title",
-                        other => other,
-                    },
-                    _ => "",
+                let reason = match rs.skip_info.as_ref().map(|s| s.reason.as_str()) {
+                    Some("url_only") => "URL-only",
+                    Some("short_title") => "Short title",
+                    Some("no_title") => "No title",
+                    Some(other) => other,
+                    None => "",
                 };
                 let title = if rs.title.is_empty() {
                     "\u{2014}"
@@ -677,7 +676,7 @@ fn write_md_ref(out: &mut String, ref_num: usize, r: &ValidationResult) {
     out.push('\n');
 }
 
-fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
+fn export_text(papers: &[ReportPaper<'_>], ref_states: &[&[ReportRef]]) -> String {
     let mut out = String::from("Hallucinator Results\n");
     out.push_str(&"=".repeat(60));
     out.push('\n');
@@ -784,21 +783,19 @@ fn export_text(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
         }
 
         // Skipped references
-        let skipped: Vec<&RefState> = paper_refs
+        let skipped: Vec<&ReportRef> = paper_refs
             .iter()
-            .filter(|rs| matches!(rs.phase, RefPhase::Skipped(_)))
+            .filter(|rs| rs.skip_info.is_some())
             .collect();
         if !skipped.is_empty() {
             out.push_str("\n  Skipped references:\n");
             for rs in &skipped {
-                let reason = match &rs.phase {
-                    RefPhase::Skipped(r) => match r.as_str() {
-                        "url_only" => "URL-only",
-                        "short_title" => "Short title",
-                        "no_title" => "No title",
-                        other => other,
-                    },
-                    _ => "",
+                let reason = match rs.skip_info.as_ref().map(|s| s.reason.as_str()) {
+                    Some("url_only") => "URL-only",
+                    Some("short_title") => "Short title",
+                    Some("no_title") => "No title",
+                    Some(other) => other,
+                    None => "",
                 };
                 let title = if rs.title.is_empty() {
                     "(no title)"
@@ -819,7 +816,7 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn export_html(papers: &[&PaperState], ref_states: &[&[RefState]]) -> String {
+fn export_html(papers: &[ReportPaper<'_>], ref_states: &[&[ReportRef]]) -> String {
     let mut out = String::with_capacity(16384);
 
     // Aggregate adjusted stats across all papers
@@ -1032,7 +1029,7 @@ footer {
         };
         out.push_str(&format!(
             "<details open>\n<summary>{}{}</summary>\n<div class=\"paper-content\">\n",
-            html_escape(&paper.filename),
+            html_escape(paper.filename),
             verdict_html,
         ));
         out.push_str(&format!(
@@ -1046,23 +1043,21 @@ footer {
         }
 
         // Skipped refs
-        let skipped: Vec<&RefState> = paper_refs
+        let skipped: Vec<&ReportRef> = paper_refs
             .iter()
-            .filter(|rs| matches!(rs.phase, RefPhase::Skipped(_)))
+            .filter(|rs| rs.skip_info.is_some())
             .collect();
         if !skipped.is_empty() {
             out.push_str(
                 "<h3 style=\"color:var(--dim);margin-top:1.5rem\">Skipped References</h3>\n",
             );
             for rs in &skipped {
-                let reason = match &rs.phase {
-                    RefPhase::Skipped(r) => match r.as_str() {
-                        "url_only" => "URL-only",
-                        "short_title" => "Short title",
-                        "no_title" => "No title",
-                        other => other,
-                    },
-                    _ => "",
+                let reason = match rs.skip_info.as_ref().map(|s| s.reason.as_str()) {
+                    Some("url_only") => "URL-only",
+                    Some("short_title") => "Short title",
+                    Some("no_title") => "No title",
+                    Some(other) => other,
+                    None => "",
                 };
                 let title = if rs.title.is_empty() {
                     "\u{2014}"
@@ -1263,4 +1258,596 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    use crate::types::{ExportFormat, FpReason, PaperVerdict, ReportPaper, ReportRef, SkipInfo};
+    use hallucinator_core::{CheckStats, DoiInfo, RetractionInfo, Status, ValidationResult};
+
+    // ── helpers ──────────────────────────────────────────────────────
+
+    fn make_result(title: &str, status: Status) -> ValidationResult {
+        ValidationResult {
+            title: title.to_string(),
+            raw_citation: String::new(),
+            ref_authors: vec![],
+            status,
+            source: None,
+            found_authors: vec![],
+            paper_url: None,
+            failed_dbs: vec![],
+            db_results: vec![],
+            doi_info: None,
+            arxiv_info: None,
+            retraction_info: None,
+        }
+    }
+
+    fn make_paper<'a>(
+        filename: &'a str,
+        stats: &'a CheckStats,
+        results: &'a [Option<ValidationResult>],
+    ) -> ReportPaper<'a> {
+        ReportPaper {
+            filename,
+            stats,
+            results,
+            verdict: None,
+        }
+    }
+
+    fn make_ref(index: usize, title: &str) -> ReportRef {
+        ReportRef {
+            index,
+            title: title.to_string(),
+            skip_info: None,
+            fp_reason: None,
+        }
+    }
+
+    fn make_ref_fp(index: usize, title: &str, fp: FpReason) -> ReportRef {
+        ReportRef {
+            index,
+            title: title.to_string(),
+            skip_info: None,
+            fp_reason: Some(fp),
+        }
+    }
+
+    fn make_ref_skipped(index: usize, title: &str, reason: &str) -> ReportRef {
+        ReportRef {
+            index,
+            title: title.to_string(),
+            skip_info: Some(SkipInfo {
+                reason: reason.to_string(),
+            }),
+            fp_reason: None,
+        }
+    }
+
+    fn make_retracted(title: &str) -> ValidationResult {
+        let mut r = make_result(title, Status::Verified);
+        r.retraction_info = Some(RetractionInfo {
+            is_retracted: true,
+            retraction_doi: Some("10.1234/retracted".to_string()),
+            retraction_source: Some("CrossRef".to_string()),
+        });
+        r
+    }
+
+    // ── P1: pure helper functions ───────────────────────────────────
+
+    #[test]
+    fn test_json_escape_special_chars() {
+        assert_eq!(json_escape(r#"He said "hi""#), r#"He said \"hi\""#);
+        assert_eq!(json_escape("back\\slash"), "back\\\\slash");
+        assert_eq!(json_escape("line\nbreak"), "line\\nbreak");
+        assert_eq!(json_escape("carriage\rreturn"), "carriage\\rreturn");
+        assert_eq!(json_escape("tab\there"), "tab\\there");
+    }
+
+    #[test]
+    fn test_json_escape_control_chars() {
+        // NUL, BEL, and other chars < 0x20 that aren't \n \r \t
+        assert_eq!(json_escape("\x00"), "\\u0000");
+        assert_eq!(json_escape("\x07"), "\\u0007");
+        assert_eq!(json_escape("\x1f"), "\\u001f");
+    }
+
+    #[test]
+    fn test_json_escape_passthrough() {
+        assert_eq!(json_escape("hello world"), "hello world");
+        assert_eq!(json_escape("café"), "café");
+        assert_eq!(json_escape("日本語"), "日本語");
+    }
+
+    #[test]
+    fn test_csv_escape_quotes() {
+        assert_eq!(csv_escape(r#"He said "hi""#), r#""He said ""hi""""#);
+    }
+
+    #[test]
+    fn test_csv_escape_comma() {
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+    }
+
+    #[test]
+    fn test_csv_escape_newline() {
+        assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
+    }
+
+    #[test]
+    fn test_csv_escape_clean() {
+        assert_eq!(csv_escape("hello"), "hello");
+    }
+
+    #[test]
+    fn test_html_escape() {
+        assert_eq!(
+            html_escape(r#"<script>&"x"</script>"#),
+            "&lt;script&gt;&amp;&quot;x&quot;&lt;/script&gt;",
+        );
+    }
+
+    #[test]
+    fn test_md_escape_pipe() {
+        assert_eq!(md_escape("A | B"), "A \\| B");
+    }
+
+    #[test]
+    fn test_days_to_ymd_epoch() {
+        assert_eq!(days_to_ymd(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn test_days_to_ymd_known_dates() {
+        // 2000-01-01 is day 10957
+        assert_eq!(days_to_ymd(10957), (2000, 1, 1));
+        // 2024-02-15 is day 19768
+        assert_eq!(days_to_ymd(19768), (2024, 2, 15));
+    }
+
+    #[test]
+    fn test_days_to_ymd_leap_year() {
+        // 2000-02-29 (leap year) = day 10957 + 31 (Jan) + 28 (Feb 1..28) = 11016
+        assert_eq!(days_to_ymd(11016), (2000, 2, 29));
+        // 2000-03-01 = day 11017
+        assert_eq!(days_to_ymd(11017), (2000, 3, 1));
+    }
+
+    // ── P2: stats & sorting logic ───────────────────────────────────
+
+    #[test]
+    fn test_problematic_pct_zero_checked() {
+        let stats = CheckStats {
+            total: 5,
+            verified: 0,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 5,
+        };
+        assert_eq!(problematic_pct(&stats), 0.0);
+    }
+
+    #[test]
+    fn test_problematic_pct_normal() {
+        let stats = CheckStats {
+            total: 10,
+            verified: 8,
+            not_found: 2,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        assert!((problematic_pct(&stats) - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_adjusted_stats_fp_not_found() {
+        let stats = CheckStats {
+            total: 3,
+            verified: 1,
+            not_found: 2,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results: Vec<Option<ValidationResult>> = vec![
+            Some(make_result("A", Status::Verified)),
+            Some(make_result("B", Status::NotFound)),
+            Some(make_result("C", Status::NotFound)),
+        ];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![
+            make_ref(0, "A"),
+            make_ref_fp(1, "B", FpReason::BrokenParse),
+            make_ref(2, "C"),
+        ];
+        let adj = adjusted_stats(&paper, &refs);
+        assert_eq!(adj.not_found, 1);
+        assert_eq!(adj.verified, 2);
+    }
+
+    #[test]
+    fn test_adjusted_stats_fp_mismatch() {
+        let stats = CheckStats {
+            total: 2,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 1,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results: Vec<Option<ValidationResult>> = vec![
+            Some(make_result("A", Status::Verified)),
+            Some(make_result("B", Status::AuthorMismatch)),
+        ];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![
+            make_ref(0, "A"),
+            make_ref_fp(1, "B", FpReason::ExistsElsewhere),
+        ];
+        let adj = adjusted_stats(&paper, &refs);
+        assert_eq!(adj.author_mismatch, 0);
+        assert_eq!(adj.verified, 2);
+    }
+
+    #[test]
+    fn test_adjusted_stats_fp_verified_noop() {
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results: Vec<Option<ValidationResult>> = vec![Some(make_result("A", Status::Verified))];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![make_ref_fp(0, "A", FpReason::KnownGood)];
+        let adj = adjusted_stats(&paper, &refs);
+        // Verified → Verified is a no-op
+        assert_eq!(adj.verified, 1);
+        assert_eq!(adj.not_found, 0);
+    }
+
+    #[test]
+    fn test_adjusted_stats_fp_retracted() {
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 1,
+            skipped: 0,
+        };
+        let results: Vec<Option<ValidationResult>> = vec![Some(make_retracted("A"))];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![make_ref_fp(0, "A", FpReason::KnownGood)];
+        let adj = adjusted_stats(&paper, &refs);
+        assert_eq!(adj.retracted, 0);
+    }
+
+    #[test]
+    fn test_build_sorted_refs_order() {
+        // Build refs in scrambled order: verified, not_found, retracted, mismatch, FP, doi_issue
+        let mut retracted = make_retracted("Retracted Paper");
+        retracted.status = Status::NotFound; // retracted + not_found
+        let mut doi_issue = make_result("DOI Issue", Status::Verified);
+        doi_issue.doi_info = Some(DoiInfo {
+            doi: "10.bad".into(),
+            valid: false,
+            title: None,
+        });
+
+        let results: Vec<Option<ValidationResult>> = vec![
+            Some(make_result("Verified", Status::Verified)), // bucket 5
+            Some(make_result("Not Found", Status::NotFound)), // bucket 1
+            Some(retracted),                                 // bucket 0
+            Some(make_result("Mismatch", Status::AuthorMismatch)), // bucket 2
+            Some(make_result("FP Paper", Status::NotFound)), // bucket 4 (FP)
+            Some(doi_issue),                                 // bucket 3
+        ];
+        let stats = CheckStats::default();
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![
+            make_ref(0, "Verified"),
+            make_ref(1, "Not Found"),
+            make_ref(2, "Retracted Paper"),
+            make_ref(3, "Mismatch"),
+            make_ref_fp(4, "FP Paper", FpReason::BrokenParse),
+            make_ref(5, "DOI Issue"),
+        ];
+        let sorted = build_sorted_refs(&paper, &refs);
+        let titles: Vec<&str> = sorted.iter().map(|s| s.result.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "Retracted Paper", // 0: retracted
+                "Not Found",       // 1: not_found
+                "Mismatch",        // 2: author_mismatch
+                "DOI Issue",       // 3: doi/arxiv issue
+                "FP Paper",        // 4: FP override
+                "Verified",        // 5: clean verified
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_sorted_refs_tiebreak() {
+        // Two not_found refs: should be ordered by ref_num (index+1)
+        let results: Vec<Option<ValidationResult>> = vec![
+            Some(make_result("Second", Status::NotFound)),
+            Some(make_result("First", Status::NotFound)),
+        ];
+        let stats = CheckStats::default();
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![
+            make_ref(0, "Second"), // ref_num = 1
+            make_ref(1, "First"),  // ref_num = 2
+        ];
+        let sorted = build_sorted_refs(&paper, &refs);
+        assert_eq!(sorted[0].ref_num, 1);
+        assert_eq!(sorted[1].ref_num, 2);
+    }
+
+    #[test]
+    fn test_export_sort_key_fp_precedence() {
+        let nf = make_result("A", Status::NotFound);
+        let mm = make_result("B", Status::AuthorMismatch);
+        let v = make_result("C", Status::Verified);
+        // All should return 4 when FP is set, regardless of status
+        assert_eq!(export_sort_key(&nf, Some(FpReason::BrokenParse)), 4);
+        assert_eq!(export_sort_key(&mm, Some(FpReason::ExistsElsewhere)), 4);
+        assert_eq!(export_sort_key(&v, Some(FpReason::KnownGood)), 4);
+    }
+
+    // ── P3: enum roundtrips ─────────────────────────────────────────
+
+    #[test]
+    fn test_fp_reason_cycle() {
+        let mut current = None;
+        let expected = [
+            Some(FpReason::BrokenParse),
+            Some(FpReason::ExistsElsewhere),
+            Some(FpReason::AllTimedOut),
+            Some(FpReason::KnownGood),
+            Some(FpReason::NonAcademic),
+            None,
+        ];
+        for exp in &expected {
+            current = FpReason::cycle(current);
+            assert_eq!(current, *exp);
+        }
+    }
+
+    #[test]
+    fn test_fp_reason_str_roundtrip() {
+        let all = [
+            FpReason::BrokenParse,
+            FpReason::ExistsElsewhere,
+            FpReason::AllTimedOut,
+            FpReason::KnownGood,
+            FpReason::NonAcademic,
+        ];
+        for fp in &all {
+            assert_eq!(FpReason::from_str(fp.as_str()), Ok(*fp));
+        }
+    }
+
+    #[test]
+    fn test_fp_reason_from_str_unknown() {
+        assert!(FpReason::from_str("garbage").is_err());
+        assert!(FpReason::from_str("").is_err());
+    }
+
+    #[test]
+    fn test_paper_verdict_cycle() {
+        assert_eq!(PaperVerdict::cycle(None), Some(PaperVerdict::Safe));
+        assert_eq!(
+            PaperVerdict::cycle(Some(PaperVerdict::Safe)),
+            Some(PaperVerdict::Questionable)
+        );
+        assert_eq!(PaperVerdict::cycle(Some(PaperVerdict::Questionable)), None);
+    }
+
+    #[test]
+    fn test_export_format_all() {
+        let all = ExportFormat::all();
+        assert_eq!(all.len(), 5);
+        for fmt in all {
+            assert!(!fmt.label().is_empty());
+            assert!(!fmt.extension().is_empty());
+        }
+    }
+
+    // ── P4: format integration (smoke tests) ────────────────────────
+
+    #[test]
+    fn test_json_empty_papers() {
+        let out = export_json(&[], &[]);
+        assert_eq!(out, "[\n]\n");
+    }
+
+    #[test]
+    fn test_json_single_paper() {
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results = vec![Some(make_result("Good Paper", Status::Verified))];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "Good Paper")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_json(&[paper], ref_slices);
+        // Should be valid-ish JSON structure
+        assert!(out.starts_with("[\n"));
+        assert!(out.ends_with("]\n"));
+        assert!(out.contains("\"filename\": \"test.pdf\""));
+        assert!(out.contains("\"verified\": 1"));
+        assert!(out.contains("\"title\": \"Good Paper\""));
+        assert!(out.contains("\"status\": \"verified\""));
+    }
+
+    #[test]
+    fn test_json_skipped_ref() {
+        let stats = CheckStats {
+            total: 1,
+            verified: 0,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 1,
+        };
+        let results: Vec<Option<ValidationResult>> = vec![];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![make_ref_skipped(0, "Short", "short_title")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_json(&[paper], ref_slices);
+        assert!(out.contains("\"status\": \"skipped\""));
+        assert!(out.contains("\"skip_reason\": \"short_title\""));
+    }
+
+    #[test]
+    fn test_json_fp_override() {
+        let stats = CheckStats {
+            total: 1,
+            verified: 0,
+            not_found: 1,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results = vec![Some(make_result("FP Ref", Status::NotFound))];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![make_ref_fp(0, "FP Ref", FpReason::ExistsElsewhere)];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_json(&[paper], ref_slices);
+        assert!(out.contains("\"effective_status\": \"verified\""));
+        assert!(out.contains("\"status\": \"not_found\""));
+        assert!(out.contains("\"fp_reason\": \"exists_elsewhere\""));
+    }
+
+    #[test]
+    fn test_csv_header() {
+        let out = export_csv(&[], &[]);
+        let first_line = out.lines().next().unwrap();
+        assert_eq!(
+            first_line,
+            "Filename,Verdict,Ref#,Title,Status,EffectiveStatus,FpReason,Source,Retracted,Authors,FoundAuthors,PaperURL,DOI,ArxivID,FailedDBs",
+        );
+    }
+
+    #[test]
+    fn test_csv_single_ref() {
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results = vec![Some(make_result("My Paper", Status::Verified))];
+        let paper = make_paper("test.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "My Paper")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_csv(&[paper], ref_slices);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2); // header + 1 data row
+        assert!(lines[1].starts_with("test.pdf,"));
+        assert!(lines[1].contains("My Paper"));
+    }
+
+    #[test]
+    fn test_markdown_structure() {
+        let stats = CheckStats {
+            total: 2,
+            verified: 1,
+            not_found: 1,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results = vec![
+            Some(make_result("Good", Status::Verified)),
+            Some(make_result("Bad", Status::NotFound)),
+        ];
+        let paper = make_paper("paper.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "Good"), make_ref(1, "Bad")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_markdown(&[paper], ref_slices);
+        assert!(out.contains("# Hallucinator Results"));
+        assert!(out.contains("## paper.pdf"));
+        assert!(out.contains("**2** references"));
+        assert!(out.contains("**1** verified"));
+        assert!(out.contains("**1** not found"));
+    }
+
+    #[test]
+    fn test_text_structure() {
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results = vec![Some(make_result("Paper", Status::Verified))];
+        let paper = make_paper("f.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "Paper")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_text(&[paper], ref_slices);
+        assert!(out.starts_with("Hallucinator Results\n===="));
+        assert!(out.contains("f.pdf"));
+        assert!(out.contains("1 total"));
+        assert!(out.contains("1 verified"));
+    }
+
+    #[test]
+    fn test_html_structure() {
+        let stats = CheckStats {
+            total: 1,
+            verified: 1,
+            not_found: 0,
+            author_mismatch: 0,
+            retracted: 0,
+            skipped: 0,
+        };
+        let results = vec![Some(make_result("Paper", Status::Verified))];
+        let paper = make_paper("f.pdf", &stats, &results);
+        let refs = vec![make_ref(0, "Paper")];
+        let ref_slices: &[&[ReportRef]] = &[&refs];
+        let out = export_html(&[paper], ref_slices);
+        assert!(out.contains("<!DOCTYPE html>"));
+        assert!(out.contains("stat-card"));
+        assert!(out.contains("</html>"));
+    }
+
+    #[test]
+    fn test_html_verdict_badges() {
+        let stats = CheckStats::default();
+        let results: Vec<Option<ValidationResult>> = vec![];
+
+        let mut safe_paper = make_paper("safe.pdf", &stats, &results);
+        safe_paper.verdict = Some(PaperVerdict::Safe);
+        let mut quest_paper = make_paper("quest.pdf", &stats, &results);
+        quest_paper.verdict = Some(PaperVerdict::Questionable);
+
+        let empty_refs: &[ReportRef] = &[];
+        let ref_slices: &[&[ReportRef]] = &[empty_refs, empty_refs];
+        let out = export_html(&[safe_paper, quest_paper], ref_slices);
+        assert!(out.contains("badge verified\">SAFE</span>"));
+        assert!(out.contains("badge not-found\">?!</span>"));
+    }
 }

@@ -1110,6 +1110,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hallucinator-reporting"
+version = "0.1.1-alpha.1"
+dependencies = [
+ "hallucinator-core",
+]
+
+[[package]]
 name = "hallucinator-tui"
 version = "0.1.1-alpha.1"
 dependencies = [
@@ -1124,6 +1131,7 @@ dependencies = [
  "hallucinator-core",
  "hallucinator-dblp",
  "hallucinator-pdf",
+ "hallucinator-reporting",
  "indicatif",
  "ratatui",
  "reqwest",

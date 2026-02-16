@@ -1,5 +1,7 @@
 use hallucinator_core::{Status, ValidationResult};
 
+pub use hallucinator_reporting::FpReason;
+
 /// Processing phase of a single reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefPhase {
@@ -10,80 +12,6 @@ pub enum RefPhase {
     Done,
     /// Reference was skipped during extraction (URL-only, short title, etc.).
     Skipped(String),
-}
-
-/// Reason a user marked a reference as a false positive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FpReason {
-    /// Citation parsing failed, title garbled.
-    BrokenParse,
-    /// Found on Google Scholar or another source not checked by the tool.
-    ExistsElsewhere,
-    /// All databases timed out; reference likely exists.
-    AllTimedOut,
-    /// User personally knows this reference is real.
-    KnownGood,
-    /// Non-academic source (RFC, legal document, news article, etc.).
-    NonAcademic,
-}
-
-impl FpReason {
-    /// Cycle: None → BrokenParse → ExistsElsewhere → AllTimedOut → KnownGood → NonAcademic → None.
-    pub fn cycle(current: Option<FpReason>) -> Option<FpReason> {
-        match current {
-            None => Some(FpReason::BrokenParse),
-            Some(FpReason::BrokenParse) => Some(FpReason::ExistsElsewhere),
-            Some(FpReason::ExistsElsewhere) => Some(FpReason::AllTimedOut),
-            Some(FpReason::AllTimedOut) => Some(FpReason::KnownGood),
-            Some(FpReason::KnownGood) => Some(FpReason::NonAcademic),
-            Some(FpReason::NonAcademic) => None,
-        }
-    }
-
-    /// Short label for the verdict column (e.g. "parse", "GS").
-    pub fn short_label(self) -> &'static str {
-        match self {
-            FpReason::BrokenParse => "parse",
-            FpReason::ExistsElsewhere => "GS",
-            FpReason::AllTimedOut => "timeout",
-            FpReason::KnownGood => "known",
-            FpReason::NonAcademic => "N/A",
-        }
-    }
-
-    /// Human-readable description for the detail banner.
-    pub fn description(self) -> &'static str {
-        match self {
-            FpReason::BrokenParse => "Broken citation parse",
-            FpReason::ExistsElsewhere => "Found on Google Scholar / other source",
-            FpReason::AllTimedOut => "All databases timed out",
-            FpReason::KnownGood => "User verified as real",
-            FpReason::NonAcademic => "Non-academic source (RFC, legal, news, etc.)",
-        }
-    }
-
-    /// JSON-serializable string key.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FpReason::BrokenParse => "broken_parse",
-            FpReason::ExistsElsewhere => "exists_elsewhere",
-            FpReason::AllTimedOut => "all_timed_out",
-            FpReason::KnownGood => "known_good",
-            FpReason::NonAcademic => "non_academic",
-        }
-    }
-
-    /// Parse from a JSON string key.
-    pub fn from_str(s: &str) -> Option<FpReason> {
-        match s {
-            "broken_parse" => Some(FpReason::BrokenParse),
-            "exists_elsewhere" => Some(FpReason::ExistsElsewhere),
-            "all_timed_out" => Some(FpReason::AllTimedOut),
-            "known_good" => Some(FpReason::KnownGood),
-            "non_academic" => Some(FpReason::NonAcademic),
-            _ => None,
-        }
-    }
 }
 
 /// State of a single reference within a paper.

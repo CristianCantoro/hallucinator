@@ -1,30 +1,6 @@
 use hallucinator_core::{CheckStats, Status, ValidationResult};
 
-/// User-assigned verdict for an entire paper.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaperVerdict {
-    Safe,
-    Questionable,
-}
-
-impl PaperVerdict {
-    /// Cycle: None → Safe → Questionable → None.
-    pub fn cycle(current: Option<Self>) -> Option<Self> {
-        match current {
-            None => Some(Self::Safe),
-            Some(Self::Safe) => Some(Self::Questionable),
-            Some(Self::Questionable) => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Safe => "SAFE",
-            Self::Questionable => "?!",
-        }
-    }
-}
+pub use hallucinator_reporting::PaperVerdict;
 
 /// Processing phase of a paper in the queue.
 #[derive(Debug, Clone, PartialEq, Eq)]

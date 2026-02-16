@@ -879,17 +879,51 @@ impl App {
                                     .unwrap_or_else(|| (0..self.papers.len()).collect())
                             }
                         };
-                        let papers: Vec<&crate::model::queue::PaperState> = paper_indices
-                            .iter()
-                            .filter_map(|&i| self.papers.get(i))
-                            .collect();
-                        let ref_states: Vec<&[RefState]> = paper_indices
-                            .iter()
-                            .filter_map(|&i| self.ref_states.get(i).map(|v| v.as_slice()))
-                            .collect();
-                        match crate::export::export_results(
-                            &papers,
-                            &ref_states,
+                        let report_papers: Vec<hallucinator_reporting::ReportPaper<'_>> =
+                            paper_indices
+                                .iter()
+                                .filter_map(|&i| {
+                                    let paper = self.papers.get(i)?;
+                                    Some(hallucinator_reporting::ReportPaper {
+                                        filename: &paper.filename,
+                                        stats: &paper.stats,
+                                        results: &paper.results,
+                                        verdict: paper.verdict,
+                                    })
+                                })
+                                .collect();
+                        let report_refs: Vec<Vec<hallucinator_reporting::ReportRef>> =
+                            paper_indices
+                                .iter()
+                                .map(|&i| {
+                                    self.ref_states
+                                        .get(i)
+                                        .map(|refs| {
+                                            refs.iter()
+                                                .map(|rs| hallucinator_reporting::ReportRef {
+                                                    index: rs.index,
+                                                    title: rs.title.clone(),
+                                                    skip_info: if let RefPhase::Skipped(reason) =
+                                                        &rs.phase
+                                                    {
+                                                        Some(hallucinator_reporting::SkipInfo {
+                                                            reason: reason.clone(),
+                                                        })
+                                                    } else {
+                                                        None
+                                                    },
+                                                    fp_reason: rs.fp_reason,
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default()
+                                })
+                                .collect();
+                        let ref_slices: Vec<&[hallucinator_reporting::ReportRef]> =
+                            report_refs.iter().map(|v| v.as_slice()).collect();
+                        match hallucinator_reporting::export_results(
+                            &report_papers,
+                            &ref_slices,
                             self.export_state.format,
                             std::path::Path::new(&path),
                         ) {
