@@ -50,13 +50,14 @@ const DIAGNOSTICS: &[(&str, &str)] = &[
     ("CITATION ANALYSIS ENGINE", "LOADED"),
     ("FUZZY MATCH THRESHOLD", "95%"),
     ("CONCURRENT VALIDATORS", "10"),
-    ("SLOP TARGETING", "ENGAGED"),
+    ("SLOP TARGETING", "ONLINE"),
 ];
 
-// Crosshair for the splash screen (larger than the logo-bar reticle)
-const CROSSHAIR: &[&str] = &["      ╎      ", "  ─ ─ + ─ ─  ", "      ╎      "];
-const CROSSHAIR_WIDTH: u16 = 14;
-const CROSSHAIR_CENTER_COL: u16 = 6; // column of the '+' within CROSSHAIR
+// Targeting brackets for the splash screen — single-line while seeking, double-line on lock
+const BRACKET_SEEK: &[&str] = &["┌──    ──┐", "    ·     ", "└──    ──┘"];
+const BRACKET_LOCK: &[&str] = &["╔══    ══╗", "    ·     ", "╚══    ══╝"];
+const CROSSHAIR_WIDTH: u16 = 10;
+const CROSSHAIR_CENTER_COL: u16 = 4; // column of the '·' within brackets
 
 /// Seeker crosshair phase for T-800 splash.
 #[derive(Clone, Copy, PartialEq)]
@@ -97,6 +98,7 @@ pub struct T800Splash {
     pub phase: SeekerPhase,
     lock_timer: u32,
     label_idx: usize,
+    lock_hit: bool, // true = label shown + double brackets; false = false alarm
     rng: u64,
 }
 
@@ -141,6 +143,7 @@ impl T800Splash {
             phase: SeekerPhase::Seeking,
             lock_timer: 0,
             label_idx: 0,
+            lock_hit: false,
             rng,
         }
     }
@@ -167,7 +170,13 @@ impl T800Splash {
                 let dist = (dx * dx + dy * dy).sqrt();
                 if dist < 0.5 {
                     self.phase = SeekerPhase::Locked;
-                    self.lock_timer = 20;
+                    // ~60% chance of a "hit" (label + double brackets)
+                    self.rng = self
+                        .rng
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    self.lock_hit = (self.rng >> 33) % 5 < 3;
+                    self.lock_timer = if self.lock_hit { 20 } else { 8 };
                 } else {
                     let step = 1.2_f32.min(dist);
                     self.cx += dx / dist * step;
@@ -178,17 +187,34 @@ impl T800Splash {
                 if self.lock_timer > 0 {
                     self.lock_timer -= 1;
                 } else {
-                    // Pick new random target
+                    // ~25% chance of a long-range snap, otherwise scan nearby
                     self.rng = self
                         .rng
                         .wrapping_mul(6364136223846793005)
                         .wrapping_add(1442695040888963407);
-                    self.tx = ((self.rng >> 33) as f32 % w).clamp(min_x, max_x);
+                    let far = (self.rng >> 33).is_multiple_of(4);
                     self.rng = self
                         .rng
                         .wrapping_mul(6364136223846793005)
                         .wrapping_add(1442695040888963407);
-                    self.ty = ((self.rng >> 33) as f32 % h).clamp(min_y, max_y);
+                    if far {
+                        self.tx = ((self.rng >> 33) as f32 % w).clamp(min_x, max_x);
+                    } else {
+                        let rx = (w * 0.3).max(4.0);
+                        let ox = ((self.rng >> 33) as f32 % (rx * 2.0)) - rx;
+                        self.tx = (self.cx + ox).clamp(min_x, max_x);
+                    }
+                    self.rng = self
+                        .rng
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    if far {
+                        self.ty = ((self.rng >> 33) as f32 % h).clamp(min_y, max_y);
+                    } else {
+                        let ry = (h * 0.3).max(3.0);
+                        let oy = ((self.rng >> 33) as f32 % (ry * 2.0)) - ry;
+                        self.ty = (self.cy + oy).clamp(min_y, max_y);
+                    }
                     self.rng = self
                         .rng
                         .wrapping_mul(6364136223846793005)
@@ -624,75 +650,7 @@ fn render_t800(
 
     // ── Phase 4: Seeking crosshair + prompt ──
     if in_phase4 {
-        if let Some(splash) = splash {
-            // Tick with real inner dimensions so targets stay in visible bounds
-            splash.tick(inner.width, inner.height);
-            // Map seeker grid coords to screen coords, centering '+' on position
-            let raw_x = inner.x as i16 + splash.cx as i16 - CROSSHAIR_CENTER_COL as i16;
-            let raw_y = inner.y as i16 + splash.cy as i16 - 1;
-            let cx = raw_x.clamp(
-                inner.x as i16,
-                (inner.x + inner.width).saturating_sub(CROSSHAIR_WIDTH) as i16,
-            ) as u16;
-            let cy = raw_y.clamp(
-                inner.y as i16 + 1,
-                (inner.y + inner.height).saturating_sub(4) as i16,
-            ) as u16;
-
-            let is_locked = splash.phase == SeekerPhase::Locked;
-
-            for (row, line) in CROSSHAIR.iter().enumerate() {
-                let y = cy + row as u16;
-                if y >= inner.y + inner.height.saturating_sub(1) {
-                    break;
-                }
-                for (col, ch) in line.chars().enumerate() {
-                    if ch == ' ' {
-                        continue;
-                    }
-                    let x = cx + col as u16;
-                    if x >= inner.x + inner.width {
-                        break;
-                    }
-                    let style = if is_locked {
-                        // Locked: everything white
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                    } else if ch == '+' {
-                        // Seeking: center bright white
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        // Seeking: frame red
-                        Style::default().fg(Color::Rgb(200, 0, 0))
-                    };
-                    buf.set_string(x, y, ch.to_string(), style);
-                }
-            }
-
-            // Label next to crosshair when locked
-            if is_locked {
-                let label = SEEKER_LABELS[splash.label_idx % SEEKER_LABELS.len()];
-                let label_x = cx + CROSSHAIR_WIDTH + 1;
-                let label_y = cy + 1; // Same row as '+'
-                if label_x + label.len() as u16 <= inner.x + inner.width
-                    && label_y < inner.y + inner.height.saturating_sub(1)
-                {
-                    buf.set_string(
-                        label_x,
-                        label_y,
-                        label,
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    );
-                }
-            }
-        }
-
-        // Pulsing prompt at bottom of inner area
+        // Pulsing prompt first (lower z) so reticle draws on top
         let prompt_y = inner.y + inner.height.saturating_sub(2);
         if prompt_y > inner.y + 1 {
             let pulse = (ms / 500).is_multiple_of(2);
@@ -711,6 +669,84 @@ fn render_t800(
                     .fg(prompt_color)
                     .add_modifier(Modifier::BOLD),
             );
+        }
+
+        if let Some(splash) = splash {
+            // Tick with real inner dimensions so targets stay in visible bounds
+            splash.tick(inner.width, inner.height);
+            // Map seeker grid coords to screen coords, centering '·' on position
+            let raw_x = inner.x as i16 + splash.cx as i16 - CROSSHAIR_CENTER_COL as i16;
+            let raw_y = inner.y as i16 + splash.cy as i16 - 1;
+            let cx = raw_x.clamp(
+                inner.x as i16,
+                (inner.x + inner.width).saturating_sub(CROSSHAIR_WIDTH) as i16,
+            ) as u16;
+            let cy = raw_y.clamp(
+                inner.y as i16 + 1,
+                (inner.y + inner.height).saturating_sub(4) as i16,
+            ) as u16;
+
+            let is_locked = splash.phase == SeekerPhase::Locked;
+            let is_hit = is_locked && splash.lock_hit;
+            let bracket = if is_hit { &BRACKET_LOCK } else { &BRACKET_SEEK };
+
+            let bracket_style = Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD);
+
+            for (row, line) in bracket.iter().enumerate() {
+                let y = cy + row as u16;
+                if y >= inner.y + inner.height.saturating_sub(1) {
+                    break;
+                }
+                for (col, ch) in line.chars().enumerate() {
+                    if ch == ' ' {
+                        continue;
+                    }
+                    let x = cx + col as u16;
+                    if x >= inner.x + inner.width {
+                        break;
+                    }
+                    buf.set_string(x, y, ch.to_string(), bracket_style);
+                }
+            }
+
+            // Label next to brackets only on a hit — if it won't fit, downgrade to no-hit
+            if is_hit {
+                let label = SEEKER_LABELS[splash.label_idx % SEEKER_LABELS.len()];
+                let label_x = cx + CROSSHAIR_WIDTH + 1;
+                let label_y = cy + 1; // Same row as '·'
+                if label_x + label.len() as u16 <= inner.x + inner.width
+                    && label_y < inner.y + inner.height.saturating_sub(1)
+                {
+                    buf.set_string(
+                        label_x,
+                        label_y,
+                        label,
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                } else {
+                    // Redraw as single-line brackets since label can't fit
+                    for (row, line) in BRACKET_SEEK.iter().enumerate() {
+                        let y = cy + row as u16;
+                        if y >= inner.y + inner.height.saturating_sub(1) {
+                            break;
+                        }
+                        for (col, ch) in line.chars().enumerate() {
+                            if ch == ' ' {
+                                continue;
+                            }
+                            let x = cx + col as u16;
+                            if x >= inner.x + inner.width {
+                                break;
+                            }
+                            buf.set_string(x, y, ch.to_string(), bracket_style);
+                        }
+                    }
+                }
+            }
         }
     }
 }
