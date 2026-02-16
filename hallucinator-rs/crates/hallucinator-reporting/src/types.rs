@@ -60,7 +60,6 @@ impl FpReason {
             FpReason::NonAcademic => "non_academic",
         }
     }
-
 }
 
 impl std::str::FromStr for FpReason {
