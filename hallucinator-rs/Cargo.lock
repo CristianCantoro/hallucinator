@@ -1190,6 +1190,8 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1200,8 +1202,11 @@ name = "hallucinator-pdf"
 version = "0.1.1-alpha.2"
 dependencies = [
  "flate2",
+ "hallucinator-bbl",
+ "hallucinator-core",
  "mupdf",
  "once_cell",
+ "rapidfuzz",
  "regex",
  "tar",
  "thiserror",
