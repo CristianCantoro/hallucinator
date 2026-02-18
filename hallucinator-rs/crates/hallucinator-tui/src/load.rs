@@ -317,9 +317,7 @@ fn convert_loaded(loaded: LoadedFile) -> (PaperState, Vec<RefState>) {
 /// Handles both formats:
 /// - **Export format**: JSON array of paper objects (from TUI export or `--load`)
 /// - **Persistence format**: Single JSON object (from auto-save in `~/.cache/hallucinator/runs/`)
-pub fn load_results_file(
-    path: &Path,
-) -> Result<Vec<(PaperState, Vec<RefState>)>, String> {
+pub fn load_results_file(path: &Path) -> Result<Vec<(PaperState, Vec<RefState>)>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 

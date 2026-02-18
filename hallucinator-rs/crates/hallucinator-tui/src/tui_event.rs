@@ -48,9 +48,7 @@ pub enum BackendEvent {
         event: Box<ProgressEvent>,
     },
     /// All references for a paper have been checked.
-    PaperComplete {
-        paper_index: usize,
-    },
+    PaperComplete { paper_index: usize },
     /// All papers have been processed.
     BatchComplete,
     /// Progress from a DBLP database build.

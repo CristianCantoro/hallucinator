@@ -926,7 +926,9 @@ impl App {
                                 .map(|&i| {
                                     self.ref_states
                                         .get(i)
-                                        .map(|refs| refs.iter().map(|rs| rs.result.clone()).collect())
+                                        .map(|refs| {
+                                            refs.iter().map(|rs| rs.result.clone()).collect()
+                                        })
                                         .unwrap_or_default()
                                 })
                                 .collect();
@@ -2877,7 +2879,13 @@ fn get_rss_bytes() -> Option<usize> {
             let mut info: MachTaskBasicInfo = std::mem::zeroed();
             let mut count =
                 (std::mem::size_of::<MachTaskBasicInfo>() / std::mem::size_of::<u32>()) as u32;
-            if task_info(mach_task_self(), MACH_TASK_BASIC_INFO, &mut info, &mut count) == 0 {
+            if task_info(
+                mach_task_self(),
+                MACH_TASK_BASIC_INFO,
+                &mut info,
+                &mut count,
+            ) == 0
+            {
                 return Some(info.resident_size as usize);
             }
         }
