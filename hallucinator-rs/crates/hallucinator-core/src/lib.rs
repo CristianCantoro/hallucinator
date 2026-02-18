@@ -5,6 +5,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 pub mod authors;
+pub mod cache;
 pub mod checker;
 pub mod db;
 pub mod doi;
@@ -15,6 +16,7 @@ pub mod rate_limit;
 pub mod retraction;
 
 // Re-export for convenience
+pub use cache::QueryCache;
 pub use hallucinator_pdf::{ExtractionResult, Reference, SkipStats};
 pub use orchestrator::{DbSearchResult, query_all_databases};
 pub use rate_limit::{DbQueryError, RateLimitedResult, RateLimiters};
@@ -181,6 +183,7 @@ pub struct Config {
     pub crossref_mailto: Option<String>,
     pub max_rate_limit_retries: u32,
     pub rate_limiters: Arc<RateLimiters>,
+    pub query_cache: Option<Arc<QueryCache>>,
 }
 
 impl std::fmt::Debug for Config {
@@ -208,6 +211,7 @@ impl std::fmt::Debug for Config {
                 &self.crossref_mailto.as_ref().map(|_| "***"),
             )
             .field("max_rate_limit_retries", &self.max_rate_limit_retries)
+            .field("query_cache", &self.query_cache.as_ref().map(|c| format!("{:?}", c)))
             .finish()
     }
 }
@@ -229,6 +233,7 @@ impl Default for Config {
             crossref_mailto: None,
             max_rate_limit_retries: 3,
             rate_limiters: Arc::new(RateLimiters::default()),
+            query_cache: Some(Arc::new(QueryCache::default())),
         }
     }
 }

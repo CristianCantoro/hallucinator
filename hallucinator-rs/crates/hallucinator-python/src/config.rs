@@ -77,6 +77,7 @@ impl PyValidatorConfig {
             crossref_mailto: self.crossref_mailto.clone(),
             max_rate_limit_retries: self.max_rate_limit_retries,
             rate_limiters,
+            query_cache: Some(std::sync::Arc::new(hallucinator_core::QueryCache::default())),
         })
     }
 }

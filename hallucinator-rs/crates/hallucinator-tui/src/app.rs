@@ -590,6 +590,7 @@ impl App {
             } else {
                 Some(self.config_state.crossref_mailto.clone())
             },
+            query_cache: Some(std::sync::Arc::new(hallucinator_core::QueryCache::default())),
         }
     }
 

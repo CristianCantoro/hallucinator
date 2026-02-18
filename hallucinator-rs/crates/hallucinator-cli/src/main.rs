@@ -316,6 +316,7 @@ async fn check(
         crossref_mailto,
         max_rate_limit_retries,
         rate_limiters,
+        query_cache: Some(std::sync::Arc::new(hallucinator_core::QueryCache::default())),
     };
 
     // Set up progress callback

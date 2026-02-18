@@ -198,6 +198,7 @@ async fn drainer_loop(
 ) {
     let timeout = Duration::from_secs(config.db_timeout_secs);
     let rate_limiters = config.rate_limiters.clone();
+    let cache = config.query_cache.clone();
 
     while let Ok(job) = rx.recv().await {
         let collector = &job.collector;
@@ -208,13 +209,14 @@ async fn drainer_loop(
             continue;
         }
 
-        // Query (includes governor acquire + HTTP call)
+        // Query (includes cache check + governor acquire + HTTP call)
         let rl_result = rate_limit::query_with_rate_limit(
             db.as_ref(),
             &collector.title,
             &client,
             timeout,
             &rate_limiters,
+            cache.as_deref(),
         )
         .await;
 
