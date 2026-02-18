@@ -577,6 +577,15 @@ fn try_springer_year(ref_text: &str) -> Option<(String, bool)> {
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\((\d{4}[a-z]?)\)\.?\s+").unwrap());
 
     let caps = RE.captures(ref_text)?;
+    let match_pos = caps.get(0).unwrap().start();
+
+    // Springer format has (Year) after authors, before title - typically in first 40% of text.
+    // If (Year) appears in the latter part (>60%), it's likely journal metadata (e.g., "Journal 2 (2018)")
+    // not the author-year pattern. Skip to let other handlers (like try_acm_year) match correctly.
+    if match_pos > ref_text.len() * 60 / 100 {
+        return None;
+    }
+
     let after_year = &ref_text[caps.get(0).unwrap().end()..];
 
     // Journal name character class: letters, spaces, &, +, ®, en-dash, em-dash, hyphen
@@ -2157,6 +2166,24 @@ mod tests {
         assert!(
             cleaned.contains("Reinforcement learning"),
             "Title should contain main content: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_acm_non_numeric_issue() {
+        // Issue #147: Non-numeric issue numbers (e.g., "Issue CSCW") cause title misparsing
+        let ref_text = "Josephine Lau, Benjamin Zimmerman, and Florian Schaub. 2018. Alexa, Are You Listening?: Privacy Perceptions, Concerns and Privacy-seeking Behaviors with Smart Speakers. Proceedings of the ACM on Human-Computer Interaction 2 (2018). Issue CSCW.";
+        let (title, _) = extract_title_from_reference(ref_text);
+        let cleaned = clean_title(&title, false);
+        assert!(
+            cleaned.contains("Alexa"),
+            "Title should contain 'Alexa': {}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Issue CSCW"),
+            "Title should not be 'Issue CSCW': {}",
             cleaned
         );
     }
