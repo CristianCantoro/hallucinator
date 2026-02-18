@@ -443,9 +443,9 @@ async fn finalize_collector(collector: &RefCollector) {
 
     // Build doi_info from reference DOI + DOI drainer result
     let doi_info = collector.reference.doi.as_ref().map(|doi| {
-        let valid = all_db_results
-            .iter()
-            .any(|r| r.db_name == "DOI" && matches!(r.status, DbStatus::Match | DbStatus::AuthorMismatch));
+        let valid = all_db_results.iter().any(|r| {
+            r.db_name == "DOI" && matches!(r.status, DbStatus::Match | DbStatus::AuthorMismatch)
+        });
         DoiInfo {
             doi: doi.clone(),
             valid,
